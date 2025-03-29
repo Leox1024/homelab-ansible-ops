@@ -1,6 +1,8 @@
 - name: apt upgrade
   hosts: all
   become: yes
+  become_user: root
+  become_method: su
   tasks:
     - name: Upgrade installed packages safely
       ansible.builtin.apt:
