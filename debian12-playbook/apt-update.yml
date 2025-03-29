@@ -2,7 +2,7 @@
   hosts: all
   become: yes
   become_user: root
-  become_method: su
+  become_method: sudo
   tasks:
     - name: Update apt cache
       ansible.builtin.apt:
