@@ -1,0 +1,9 @@
+- name: apt upgrade
+  hosts: all
+  become: yes
+  tasks:
+    - name: Upgrade installed packages safely
+      ansible.builtin.apt:
+        upgrade: yes
+        autoremove: yes
+        autoclean: yes
