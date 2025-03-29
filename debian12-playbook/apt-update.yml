@@ -1,12 +1,7 @@
-- name: Esegui apt update/upgrade
+- name: apt-update
   hosts: all
   become: yes
   tasks:
     - name: Update apt cache
-      apt:
+      ansible.builtin.apt:
         update_cache: yes
-    - name: Upgrade packages
-      apt:
-        upgrade: dist
-        autoremove: yes
-        autoclean: yes
