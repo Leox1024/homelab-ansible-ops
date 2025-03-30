@@ -2,7 +2,7 @@
   hosts: all
   become: yes
   become_user: root
-  become_method: su
+  become_method: sudo
 
   vars:
     timezone_region: Europe/Rome  # Default value (can be overridden per host/group)
