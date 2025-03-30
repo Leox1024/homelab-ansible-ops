@@ -1,0 +1,11 @@
+- name: Cleanup unused Docker resources
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  tasks:
+    - name: Prune unused Docker data
+      shell: docker system prune -f
+      args:
+        warn: false

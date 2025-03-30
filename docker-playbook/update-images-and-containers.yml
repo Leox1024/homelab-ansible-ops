@@ -1,0 +1,18 @@
+- name: Pull and recreate containers with updated images
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  tasks:
+    - name: Pull latest nginx image
+      community.docker.docker_image:
+        name: nginx
+        source: pull
+
+    - name: Recreate nginx container with latest image
+      community.docker.docker_container:
+        name: nginx
+        image: nginx:latest
+        state: started
+        recreate: true
