@@ -1,0 +1,34 @@
+- name: Ensure time synchronization and timezone settings
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: su
+
+  vars:
+    timezone_region: Europe/Rome  # Default value (can be overridden per host/group)
+
+  tasks:
+    - name: Install chrony
+      apt:
+        name: chrony
+        state: present
+        update_cache: yes
+
+    - name: Enable and start chrony
+      systemd:
+        name: chrony
+        enabled: yes
+        state: started
+
+    - name: Set timezone based on region
+      community.general.timezone:
+        name: "{{ timezone_region }}"
+
+    - name: Check time sync status
+      command: chronyc tracking
+      register: time_status
+      changed_when: false
+
+    - name: Show time sync result
+      debug:
+        var: time_status.stdout_lines
