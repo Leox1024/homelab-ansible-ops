@@ -1,0 +1,9 @@
+- name: apt-update
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
