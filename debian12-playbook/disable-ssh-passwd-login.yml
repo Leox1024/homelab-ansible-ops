@@ -27,15 +27,15 @@
         line: 'ChallengeResponseAuthentication no'
         state: present
         backup: yes
-
-    - name: Restart SSH service
+    
+    - name: Restart SSH service (unified)
       service:
         name: ssh
         state: restarted
-      when: ansible_service_mgr != "systemd" or ansible_facts.services['ssh.service'] is defined
-
-    - name: Restart sshd if systemd is used
-      systemd:
+      ignore_errors: yes
+    
+    - name: Restart SSHD fallback (for systems using 'sshd')
+      service:
         name: sshd
         state: restarted
-      when: ansible_service_mgr == "systemd" and ansible_facts.services['sshd.service'] is defined
+      ignore_errors: yes
