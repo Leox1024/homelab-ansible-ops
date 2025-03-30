@@ -22,4 +22,5 @@
           - vim
           - screen
           - python3
+          - sudo
         state: present
