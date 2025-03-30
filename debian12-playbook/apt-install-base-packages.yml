@@ -16,6 +16,7 @@
           - git
           - curl
           - wget
+          - tar
           - htop
           - net-tools
           - nano
@@ -23,4 +24,6 @@
           - screen
           - python3
           - sudo
+          - build-essential
+          - make
         state: present
