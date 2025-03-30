@@ -1,0 +1,41 @@
+- name: Disable SSH password login, allow only public key auth
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+  tasks:
+    - name: Ensure pubkey authentication is enabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+        state: present
+        backup: yes
+
+    - name: Disable password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+        backup: yes
+
+    - name: Disable challenge response authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication no'
+        state: present
+        backup: yes
+
+    - name: Restart SSH service
+      service:
+        name: ssh
+        state: restarted
+      when: ansible_service_mgr != "systemd" or ansible_facts.services['ssh.service'] is defined
+
+    - name: Restart sshd if systemd is used
+      systemd:
+        name: sshd
+        state: restarted
+      when: ansible_service_mgr == "systemd" and ansible_facts.services['sshd.service'] is defined
