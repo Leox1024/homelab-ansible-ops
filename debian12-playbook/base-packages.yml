@@ -1,0 +1,25 @@
+- name: Install essential base packages
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  tasks:
+    - name: Ensure APT cache is updated
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install essential packages
+      apt:
+        name:
+          - git
+          - curl
+          - wget
+          - htop
+          - net-tools
+          - nano
+          - vim
+          - screen
+          - python3
+        state: present
