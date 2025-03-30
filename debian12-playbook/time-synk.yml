@@ -14,11 +14,25 @@
         state: present
         update_cache: yes
 
-    - name: Enable and start chrony
+    - name: Stop and disable systemd-timesyncd (to avoid conflicts)
+      systemd:
+        name: systemd-timesyncd
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Check if chrony is already running
+      shell: systemctl is-active chrony
+      register: chrony_status
+      failed_when: false
+      changed_when: false
+
+    - name: Enable and start chrony (only if not already running)
       systemd:
         name: chrony
         enabled: yes
         state: started
+      when: chrony_status.stdout != "active"
 
     - name: Set timezone based on region
       community.general.timezone:
