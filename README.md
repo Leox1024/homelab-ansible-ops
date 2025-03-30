@@ -18,7 +18,7 @@ It integrates with [Semaphore](https://github.com/ansible-semaphore/semaphore) f
    - Create a new Task Template
    - Use Local Repository
    - Set the playbook path (e.g. `debian12-playbook/apt-update.yml`)
-2. Assign the correct **Inventory**, **SSH key**, and **Variable group**.
+2. Assign the correct Inventory, SSH key, and Variable group.
 3. Run the task or schedule it.
 ```
 
