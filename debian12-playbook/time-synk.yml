@@ -8,11 +8,17 @@
     timezone_region: Europe/Rome  # Default value (can be overridden per host/group)
 
   tasks:
+    - name: Skip time sync in LXC containers
+      debug:
+        msg: "Skipping time sync: container (LXC) detected"
+      when: ansible_virtualization_type == "lxc"
+
     - name: Install chrony
       apt:
         name: chrony
         state: present
         update_cache: yes
+      when: ansible_virtualization_type != "lxc"
 
     - name: Stop and disable systemd-timesyncd (to avoid conflicts)
       systemd:
@@ -20,29 +26,36 @@
         state: stopped
         enabled: no
       ignore_errors: yes
+      when: ansible_virtualization_type != "lxc"
 
     - name: Check if chrony is already running
       shell: systemctl is-active chrony
       register: chrony_status
       failed_when: false
       changed_when: false
+      when: ansible_virtualization_type != "lxc"
 
     - name: Enable and start chrony (only if not already running)
       systemd:
         name: chrony
         enabled: yes
         state: started
-      when: chrony_status.stdout != "active"
+      when:
+        - ansible_virtualization_type != "lxc"
+        - chrony_status.stdout != "active"
 
     - name: Set timezone based on region
       community.general.timezone:
         name: "{{ timezone_region }}"
+      when: ansible_virtualization_type != "lxc"
 
     - name: Check time sync status
       command: chronyc tracking
       register: time_status
       changed_when: false
+      when: ansible_virtualization_type != "lxc"
 
     - name: Show time sync result
       debug:
         var: time_status.stdout_lines
+      when: ansible_virtualization_type != "lxc"
