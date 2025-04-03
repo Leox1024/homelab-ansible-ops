@@ -11,7 +11,7 @@
     backup_storage: "pbs-backup"
 
   tasks:
-    - import_tasks: debian12-playbook/wake-on-lan.yml
-    - import_tasks: pve-playbook/backup_vms_to_pbs.yml
-    - import_tasks: pve-playbook/replication-task.yml
-    - import_tasks: debian12-playbook/poweroff.yml
+    - import_tasks: ../debian12-playbook/wake-on-lan.yml
+    - import_tasks: backup_vms_to_pbs.yml
+    - import_tasks: replication-task.yml
+    - import_tasks: ../debian12-playbook/poweroff.yml
