@@ -1,0 +1,9 @@
+- name: Shutdown the target machine
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  tasks:
+    - name: Power off the system
+      command: /sbin/poweroff
