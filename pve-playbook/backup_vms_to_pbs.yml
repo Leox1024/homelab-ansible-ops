@@ -1,32 +1,13 @@
-- name: Backup all Proxmox VMs and LXC to PBS
-  hosts: all
+- name: Run existing Proxmox backup job by ID
+  hosts: proxmox
   become: yes
   become_user: root
   become_method: sudo
 
   vars:
-    pbs_storage: "pbs-backup"
-    backup_mode: "snapshot"
+    backup_job_ids: [1, 3]  # Inserisci qui gli ID reali dei tuoi job
 
   tasks:
-    - name: Get list of KVM VM IDs
-      shell: qm list | awk 'NR>1 {print $1}'
-      register: vm_list_raw
-
-    - name: Get list of LXC container IDs
-      shell: pct list | awk 'NR>1 {print $1}'
-      register: lxc_list_raw
-
-    - name: Combine VM and LXC IDs
-      set_fact:
-        all_ids: "{{ vm_list_raw.stdout_lines + lxc_list_raw.stdout_lines }}"
-
-    - name: Backup each VM or LXC to PBS (no email notifications)
-      shell: >
-        vzdump {{ item }} 
-        --mode {{ backup_mode }} 
-        --storage {{ pbs_storage }} 
-        --compress zstd 
-        --mailto "none@example.com"
-      loop: "{{ all_ids }}"
-      when: all_ids is defined
+    - name: Start backup job {{ item }}
+      shell: systemctl start pve-daily-backup@{{ item }}.service
+      loop: "{{ backup_job_ids }}"
