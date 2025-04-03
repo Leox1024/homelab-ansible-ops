@@ -14,19 +14,19 @@
 
   tasks:
 
-    - name: 🔍 Get list of KVM VM IDs
+    - name: Get list of KVM VM IDs
       shell: qm list | awk 'NR>1 {print $1}'
       register: vm_list_raw
 
-    - name: 🔍 Get list of LXC container IDs
+    - name: Get list of LXC container IDs
       shell: pct list | awk 'NR>1 {print $1}'
       register: lxc_list_raw
 
-    - name: 🔀 Combine VM and LXC IDs
+    - name: Combine VM and LXC IDs
       set_fact:
         all_ids: "{{ vm_list_raw.stdout_lines + lxc_list_raw.stdout_lines }}"
 
-    - name: 💾 Backup each VM or LXC to PBS (no email notifications)
+    - name: Backup each VM or LXC to PBS (no email notifications)
       shell: >
         vzdump {{ item }}
         --mode {{ backup_mode }}
@@ -36,7 +36,7 @@
       loop: "{{ all_ids }}"
       when: all_ids is defined
 
-    - name: 🧪 Check if replication job exists
+    - name: Check if replication job exists
       shell: pvesr read {{ item }}-{{ job_suffix }}
       register: vm_check
       failed_when: false
@@ -45,14 +45,13 @@
       loop_control:
         label: "{{ item }}"
 
-    - name: 📋 Set list of VM/CT IDs with existing replication jobs
+    - name: Set list of VM/CT IDs with existing replication jobs
       set_fact:
         existing_vm_ids: "{{ vm_check.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
 
-    - name: 🔁 Run replication immediately for existing jobs
+    - name: Run replication immediately for existing jobs
       shell: pvesr run --id {{ item }}-{{ job_suffix }} --verbose
       loop: "{{ existing_vm_ids }}"
 
-    - name: 🔻 Power off the system
+    - name: Power off the system
       command: /sbin/poweroff
-      ignore_errors: yes
