@@ -1,0 +1,26 @@
+- name: replication for VM or LXC
+  hosts: proxmox
+  become: yes
+  become_user: root
+  become_method: su
+
+  vars:
+    vm_ids_to_replicate: [101, 202]  # Both VM (qm) and LXC (pct)
+    target_node: "pve2"
+    job_suffix: "999"  # Arbitrary number to avoid collision
+
+  tasks:
+    - name: Create temporary replication job
+      shell: >
+        pvesr create-local-job {{ item }}-{{ job_suffix }} {{ target_node }} --schedule "now"
+      loop: "{{ vm_ids_to_replicate }}"
+
+    - name: Run replication immediately
+      shell: >
+        pvesr run --id {{ item }}-{{ job_suffix }}
+      loop: "{{ vm_ids_to_replicate }}"
+
+    - name: Remove replication job after execution
+      shell: >
+        pvesr delete {{ item }}-{{ job_suffix }} --force 1
+      loop: "{{ vm_ids_to_replicate }}"
