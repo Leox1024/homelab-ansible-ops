@@ -1,23 +1,32 @@
-- name: Backup all Proxmox VMs to PBS
+- name: Backup all Proxmox VMs and LXC to PBS
   hosts: all
   become: yes
   become_user: root
   become_method: sudo
 
   vars:
-    pbs_storage: "pbs-backup"  # Change to your actual PBS storage name
-    backup_mode: "snapshot"    # You can use 'stop' or 'suspend' if needed
+    pbs_storage: "pbs-backup"
+    backup_mode: "snapshot"
 
   tasks:
-    - name: Get list of VM IDs
+    - name: Get list of KVM VM IDs
       shell: qm list | awk 'NR>1 {print $1}'
       register: vm_list_raw
 
-    - name: Set VM ID list
-      set_fact:
-        vm_ids: "{{ vm_list_raw.stdout_lines }}"
+    - name: Get list of LXC container IDs
+      shell: pct list | awk 'NR>1 {print $1}'
+      register: lxc_list_raw
 
-    - name: Backup each VM to PBS
-      shell: vzdump {{ item }} --mode {{ backup_mode }} --storage {{ pbs_storage }} --compress zstd
-      loop: "{{ vm_ids }}"
-      when: vm_ids is defined
+    - name: Combine VM and LXC IDs
+      set_fact:
+        all_ids: "{{ vm_list_raw.stdout_lines + lxc_list_raw.stdout_lines }}"
+
+    - name: Backup each VM or LXC to PBS (no email notifications)
+      shell: >
+        vzdump {{ item }} 
+        --mode {{ backup_mode }} 
+        --storage {{ pbs_storage }} 
+        --compress zstd 
+        --mailto ""
+      loop: "{{ all_ids }}"
+      when: all_ids is defined
