@@ -5,7 +5,7 @@
   become_method: sudo
 
   vars:
-    backup_job_ids: [1, 3]  # Inserisci qui gli ID reali dei tuoi job
+    backup_job_ids: [1, 3]
 
   tasks:
     - name: Start backup job {{ item }}
