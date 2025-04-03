@@ -1,5 +1,5 @@
 - name: Run existing Proxmox backup job by ID
-  hosts: proxmox
+  hosts: all
   become: yes
   become_user: root
   become_method: sudo
