@@ -1,4 +1,4 @@
-- name: Full VM Workflow – WOL → Backup → Replication → Shutdown
+- name: VM Workflow – Backup → Replication → Shutdown
   hosts: all
   become: yes
   become_user: root
@@ -7,17 +7,12 @@
   ignore_errors: yes
   
   vars:
-    wol_macaddr: "00:11:22:33:44:55"
     pbs_storage: "pbs-backup"
     backup_mode: "snapshot"
-    vm_ids_to_replicate: [101, 202]
+    vm_ids_to_replicate: [100, 200]
     job_suffix: "0"
 
   tasks:
-
-    - name: 🟢 Send magic Wake-on-LAN packet
-      community.general.wakeonlan:
-        mac: "{{ wol_macaddr }}"
 
     - name: 🔍 Get list of KVM VM IDs
       shell: qm list | awk 'NR>1 {print $1}'
@@ -33,10 +28,10 @@
 
     - name: 💾 Backup each VM or LXC to PBS (no email notifications)
       shell: >
-        vzdump {{ item }} 
-        --mode {{ backup_mode }} 
-        --storage {{ pbs_storage }} 
-        --compress zstd 
+        vzdump {{ item }}
+        --mode {{ backup_mode }}
+        --storage {{ pbs_storage }}
+        --compress zstd
         --mailto ""
       loop: "{{ all_ids }}"
       when: all_ids is defined
