@@ -7,3 +7,4 @@
   tasks:
     - name: Power off the system
       command: /sbin/poweroff
+      ignore_errors: yes
