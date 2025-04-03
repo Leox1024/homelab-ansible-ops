@@ -27,6 +27,6 @@
         --mode {{ backup_mode }} 
         --storage {{ pbs_storage }} 
         --compress zstd 
-        --mailto ""
+        --quiet
       loop: "{{ all_ids }}"
       when: all_ids is defined
