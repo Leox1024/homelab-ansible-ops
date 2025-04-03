@@ -27,6 +27,6 @@
         --mode {{ backup_mode }} 
         --storage {{ pbs_storage }} 
         --compress zstd 
-        --quiet
+        --mailnotification failure
       loop: "{{ all_ids }}"
       when: all_ids is defined
