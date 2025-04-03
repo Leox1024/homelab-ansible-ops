@@ -3,6 +3,7 @@
   become: yes
   become_user: root
   become_method: sudo
+  ignore_errors: yes
 
   vars:
     vm_ids_to_replicate: [101, 202]
