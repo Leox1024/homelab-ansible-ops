@@ -28,7 +28,7 @@
 
     - name: Create temporary replication job
       shell: >
-        pvesr create-local-job {{ item }}-{{ job_suffix }} {{ target_node }} --schedule now
+        pvesr create-local-job {{ item }}-{{ job_suffix }} {{ target_node }} --schedule "*/60"
       loop: "{{ existing_vm_ids }}"
 
     - name: Run replication immediately
