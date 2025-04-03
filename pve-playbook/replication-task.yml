@@ -7,36 +7,14 @@
   vars:
     vm_ids_to_replicate: [101, 202]  # Both VM (qm) and LXC (pct)
     target_node: "pve-200"
-    job_suffix: "999"  # Arbitrary number to avoid collision
+    job_suffix: "0"  # Arbitrary number to avoid collision
 
   tasks:
-    - name: Check if VM or LXC exists
-      shell: |
-        qm status {{ item }} || pct status {{ item }}
-      register: vm_check
-      failed_when: false
-      changed_when: false
-      loop: "{{ vm_ids_to_replicate }}"
-      loop_control:
-        label: "{{ item }}"
-      retries: 1
-      delay: 1
-
     - name: Set list of valid VM/CT IDs
       set_fact:
         existing_vm_ids: "{{ vm_check.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
 
-    - name: Create temporary replication job
-      shell: >
-        pvesr create-local-job {{ item }}-{{ job_suffix }} {{ target_node }} --schedule "hourly"
-      loop: "{{ existing_vm_ids }}"
-
     - name: Run replication immediately
       shell: >
         pvesr run --id {{ item }}-{{ job_suffix }} --verbose
-      loop: "{{ existing_vm_ids }}"
-
-    - name: Delete temporary replication job
-      shell: >
-        pvesr delete {{ item }}-{{ job_suffix }} --force 1
       loop: "{{ existing_vm_ids }}"
