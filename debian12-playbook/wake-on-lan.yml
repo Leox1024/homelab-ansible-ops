@@ -1,0 +1,13 @@
+- name: Wake-on-LAN playbook
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    wol_macaddr: "00:11:22:33:44:55"  # MAC da passare o sovrascrivere
+
+  tasks:
+    - name: Send magic Wake-on-LAN packet
+      community.general.wakeonlan:
+        mac: "{{ wol_macaddr }}"
