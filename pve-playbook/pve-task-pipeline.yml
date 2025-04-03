@@ -4,12 +4,6 @@
   become_user: root
   become_method: sudo
 
-  vars:
-    vm_ids_to_replicate: [100, 200]
-    job_suffix: "0"
-    wol_mac: "00:11:22:33:44:55"
-    backup_storage: "pbs-backup"
-
   tasks:
     - import_tasks: ../debian12-playbook/wake-on-lan.yml
     - import_tasks: backup_vms_to_pbs.yml
