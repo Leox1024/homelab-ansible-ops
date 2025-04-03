@@ -1,0 +1,23 @@
+- name: Backup all Proxmox VMs to PBS
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    pbs_storage: "pbs-backup"  # Change to your actual PBS storage name
+    backup_mode: "snapshot"    # You can use 'stop' or 'suspend' if needed
+
+  tasks:
+    - name: Get list of VM IDs
+      shell: qm list | awk 'NR>1 {print $1}'
+      register: vm_list_raw
+
+    - name: Set VM ID list
+      set_fact:
+        vm_ids: "{{ vm_list_raw.stdout_lines }}"
+
+    - name: Backup each VM to PBS
+      shell: vzdump {{ item }} --mode {{ backup_mode }} --storage {{ pbs_storage }} --compress zstd
+      loop: "{{ vm_ids }}"
+      when: vm_ids is defined
