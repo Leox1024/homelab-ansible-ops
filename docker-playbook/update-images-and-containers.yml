@@ -1,18 +1,23 @@
-- name: Pull and recreate containers with updated images
+- name: Pull and recreate all running Docker containers
   hosts: all
   become: yes
   become_user: root
   become_method: sudo
 
   tasks:
-    - name: Pull latest nginx image
-      community.docker.docker_image:
-        name: nginx
-        source: pull
+    - name: Get running Docker container names
+      shell: docker ps --format '{{.Names}}'
+      register: running_containers
+      changed_when: false
 
-    - name: Recreate nginx container with latest image
-      community.docker.docker_container:
-        name: nginx
-        image: nginx:latest
-        state: started
-        recreate: true
+    - name: Pull latest images for all running containers
+      shell: docker pull $(docker inspect --format='{{.Config.Image}}' {{ item }})
+      loop: "{{ running_containers.stdout_lines }}"
+
+    - name: Recreate each container with updated image
+      shell: |
+        docker stop {{ item }} && \
+        docker rm {{ item }} && \
+        docker run -d --name {{ item }} $(docker inspect --format='{{range .Config.Env}}{{printf "--env %q " .}}{{end}} {{range .HostConfig.PortBindings}}{{printf "-p %s:%s " .[0].HostPort .[0].HostPort}}{{end}} {{.Config.Image}}) || echo "Manual re-run may be needed for complex containers"
+      loop: "{{ running_containers.stdout_lines }}"
+      ignore_errors: yes
