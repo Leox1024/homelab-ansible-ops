@@ -1,8 +1,8 @@
 - name: replication for VM or LXC
-  hosts: proxmox
+  hosts: all
   become: yes
   become_user: root
-  become_method: su
+  become_method: sudo
 
   vars:
     vm_ids_to_replicate: [101, 202]  # Both VM (qm) and LXC (pct)
