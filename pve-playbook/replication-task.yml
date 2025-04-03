@@ -6,7 +6,7 @@
 
   vars:
     vm_ids_to_replicate: [101, 202]  # Both VM (qm) and LXC (pct)
-    target_node: "pve2"
+    target_node: "pve-200"
     job_suffix: "999"  # Arbitrary number to avoid collision
 
   tasks:
@@ -28,7 +28,7 @@
 
     - name: Create temporary replication job
       shell: >
-        pvesr create-local-job {{ item }}-{{ job_suffix }} {{ target_node }} --schedule "*/60"
+        pvesr create-local-job {{ item }}-{{ job_suffix }} {{ target_node }} --schedule "hourly"
       loop: "{{ existing_vm_ids }}"
 
     - name: Run replication immediately
