@@ -37,7 +37,7 @@
         state: started
       when:
         - ansible_virtualization_type != "lxc"
-        - chrony_status.stdout != "active"
+        - (chrony_status.stdout | trim) != "active"
 
     - name: Set timezone using tzdata in LXC
       block:
