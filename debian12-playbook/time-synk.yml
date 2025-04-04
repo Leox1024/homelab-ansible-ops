@@ -1,6 +1,9 @@
 - name: Update time and timezone on VMs and LXC containers
   hosts: all
   become: yes
+  become_user: root
+  become_method: sudo
+  
   vars:
     # Set the desired timezone, e.g., "Europe/Rome"
     new_timezone: "Europe/Rome"
