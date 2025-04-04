@@ -5,7 +5,7 @@
   become_method: sudo
 
   vars:
-    timezone_region: Europe/Rome  # Default value (can be overridden per host/group)
+    timezone_region: Europe/Rome  # Default value (can be overridden via external variable)
 
   tasks:
     - name: Install chrony (non-LXC only)
@@ -40,9 +40,27 @@
         - chrony_status.stdout != "active"
 
     - name: Set timezone using tzdata in LXC
-      shell: |
-        echo "{{ timezone_region }}" > /etc/timezone
-        dpkg-reconfigure -f noninteractive tzdata
+      block:
+        - name: Ensure tzdata is installed
+          apt:
+            name: tzdata
+            state: present
+            update_cache: yes
+
+        - name: Set /etc/timezone
+          copy:
+            content: "{{ timezone_region }}\n"
+            dest: /etc/timezone
+
+        - name: Set /etc/localtime symlink
+          file:
+            src: "/usr/share/zoneinfo/{{ timezone_region }}"
+            dest: /etc/localtime
+            state: link
+            force: yes
+
+        - name: Reconfigure tzdata
+          command: dpkg-reconfigure -f noninteractive tzdata
       when: ansible_virtualization_type == "lxc"
 
     - name: Set timezone based on region (non-LXC only)
