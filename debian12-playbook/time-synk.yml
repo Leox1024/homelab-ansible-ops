@@ -8,19 +8,14 @@
     timezone_region: Europe/Rome  # Default value (can be overridden per host/group)
 
   tasks:
-    - name: Skip time sync in LXC containers
-      debug:
-        msg: "Skipping time sync: container (LXC) detected"
-      when: ansible_virtualization_type == "lxc"
-
-    - name: Install chrony
+    - name: Install chrony (non-LXC only)
       apt:
         name: chrony
         state: present
         update_cache: yes
       when: ansible_virtualization_type != "lxc"
 
-    - name: Stop and disable systemd-timesyncd (to avoid conflicts)
+    - name: Stop and disable systemd-timesyncd (non-LXC only)
       systemd:
         name: systemd-timesyncd
         state: stopped
@@ -28,14 +23,14 @@
       ignore_errors: yes
       when: ansible_virtualization_type != "lxc"
 
-    - name: Check if chrony is already running
+    - name: Check if chrony is already running (non-LXC only)
       shell: systemctl is-active chrony
       register: chrony_status
       failed_when: false
       changed_when: false
       when: ansible_virtualization_type != "lxc"
 
-    - name: Enable and start chrony (only if not already running)
+    - name: Enable and start chrony (non-LXC only, only if not already running)
       systemd:
         name: chrony
         enabled: yes
@@ -44,18 +39,24 @@
         - ansible_virtualization_type != "lxc"
         - chrony_status.stdout != "active"
 
-    - name: Set timezone based on region
+    - name: Set timezone using tzdata in LXC
+      shell: |
+        echo "{{ timezone_region }}" > /etc/timezone
+        dpkg-reconfigure -f noninteractive tzdata
+      when: ansible_virtualization_type == "lxc"
+
+    - name: Set timezone based on region (non-LXC only)
       community.general.timezone:
         name: "{{ timezone_region }}"
       when: ansible_virtualization_type != "lxc"
 
-    - name: Check time sync status
+    - name: Check time sync status (non-LXC only)
       command: chronyc tracking
       register: time_status
       changed_when: false
       when: ansible_virtualization_type != "lxc"
 
-    - name: Show time sync result
+    - name: Show time sync result (non-LXC only)
       debug:
         var: time_status.stdout_lines
       when: ansible_virtualization_type != "lxc"
