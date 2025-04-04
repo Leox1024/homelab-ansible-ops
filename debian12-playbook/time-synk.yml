@@ -1,80 +1,11 @@
-- name: Ensure time synchronization and timezone settings
+- name: Update time and timezone on VMs and LXC containers
   hosts: all
   become: yes
-  become_user: root
-  become_method: sudo
-
   vars:
-    timezone_region: Europe/Rome  # Default value (can be overridden via external variable)
+    # Set the desired timezone, e.g., "Europe/Rome"
+    new_timezone: "Europe/Rome"
 
   tasks:
-    - name: Install chrony (non-LXC only)
-      apt:
-        name: chrony
-        state: present
-        update_cache: yes
-      when: ansible_virtualization_type != "lxc"
-
-    - name: Stop and disable systemd-timesyncd (non-LXC only)
-      systemd:
-        name: systemd-timesyncd
-        state: stopped
-        enabled: no
-      ignore_errors: yes
-      when: ansible_virtualization_type != "lxc"
-
-    - name: Check if chrony is already running (non-LXC only)
-      shell: systemctl is-active chrony
-      register: chrony_status
-      failed_when: false
-      changed_when: false
-      when: ansible_virtualization_type != "lxc"
-
-    - name: Enable and start chrony (non-LXC only, only if not already running)
-      systemd:
-        name: chrony
-        enabled: yes
-        state: started
-      when:
-        - ansible_virtualization_type != "lxc"
-        - (chrony_status.stdout | trim) != "active"
-
-    - name: Set timezone using tzdata in LXC
-      block:
-        - name: Ensure tzdata is installed
-          apt:
-            name: tzdata
-            state: present
-            update_cache: yes
-
-        - name: Set /etc/timezone
-          copy:
-            content: "{{ timezone_region }}\n"
-            dest: /etc/timezone
-
-        - name: Set /etc/localtime symlink
-          file:
-            src: "/usr/share/zoneinfo/{{ timezone_region }}"
-            dest: /etc/localtime
-            state: link
-            force: yes
-
-        - name: Reconfigure tzdata
-          command: dpkg-reconfigure -f noninteractive tzdata
-      when: ansible_virtualization_type == "lxc"
-
-    - name: Set timezone based on region (non-LXC only)
-      community.general.timezone:
-        name: "{{ timezone_region }}"
-      when: ansible_virtualization_type != "lxc"
-
-    - name: Check time sync status (non-LXC only)
-      command: chronyc tracking
-      register: time_status
-      changed_when: false
-      when: ansible_virtualization_type != "lxc"
-
-    - name: Show time sync result (non-LXC only)
-      debug:
-        var: time_status.stdout_lines
-      when: ansible_virtualization_type != "lxc"
+    - name: Update the timezone using tzdata
+      ansible.builtin.timezone:
+        name: "{{ new_timezone }}"
