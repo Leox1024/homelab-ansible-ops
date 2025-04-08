@@ -1,0 +1,25 @@
+- name: Set CPU frequency using sysfs
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: su
+
+  vars:
+    max_freq: 3300000
+    min_freq: 1400000
+
+  tasks:
+    - name: Get CPU frequency policy directories
+      find:
+        paths: /sys/devices/system/cpu/cpufreq
+        file_type: directory
+        patterns: 'policy*'
+      register: policies
+
+    - name: Set max frequency
+      shell: "echo {{ max_freq }} > {{ item.path }}/scaling_max_freq"
+      loop: "{{ policies.files }}"
+
+    - name: Set min frequency
+      shell: "echo {{ min_freq }} > {{ item.path }}/scaling_min_freq"
+      loop: "{{ policies.files }}"
