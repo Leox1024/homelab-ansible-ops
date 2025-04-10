@@ -1,0 +1,19 @@
+- name: Scan Nextcloud User dir for synk
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    nextcloud_user: "admin"
+    nextcloud_dir: "/var/www/nextcloud/occ"
+
+  tasks: 
+    - name: Run Nextcloud files scan for specified User
+      ansible.builtin.command: >
+	sudo -u www-data php {{ nextcloud_dir }} files:scan {{ nextcloud_user }}
+      register: scan_output
+
+    - name: Show scan output
+      ansible.builtin.debug:
+        var: scan_output.stdout
