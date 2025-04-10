@@ -28,3 +28,18 @@ It integrates with [Semaphore](https://github.com/ansible-semaphore/semaphore) f
 - Semaphore up and running
 - VM access via SSH (key-based authentication preferred)
 ```
+
+## 🖥️ Targeting hosts in playbooks
+
+All playbooks in this repository are written with:
+
+```yaml
+hosts: all
+```
+
+To run a playbook on a specific host or group, use the Limit field in AWX/Ansible Tower templates or pass the --limit flag via CLI:
+```bash
+ansible-playbook playbook.yml --limit svc-ncloud
+```
+
+This approach keeps playbooks generic and reusable across different environments and inventories.
