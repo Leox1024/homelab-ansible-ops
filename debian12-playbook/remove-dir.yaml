@@ -1,0 +1,35 @@
+- name: Smart file/dir deleter
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    path_var: "/var/test/download"  # ← single file o directory
+
+  tasks:
+    - name: Stat the path
+      stat:
+        path: "{{ path_var }}"
+      register: path_stat
+
+    - name: Fail if path does not exist
+      fail:
+        msg: "The path {{ path_var }} does not exist!"
+      when: not path_stat.stat.exists
+
+    - name: Delete the entire directory
+      file:
+        path: "{{ path_var }}"
+        state: absent
+      when:
+        - path_stat.stat.exists
+        - path_stat.stat.isdir
+
+    - name: Delete the file
+      file:
+        path: "{{ path_var }}"
+        state: absent
+      when:
+        - path_stat.stat.exists
+        - not path_stat.stat.isdir
