@@ -61,7 +61,7 @@
       when: path_stat.stat.isdir | default(false)
     
     # Delete inside dir /path/to/delete/*
-    - name: Handle wildcard deletion - delete only contents
+    - name: Handle wildcard deletion - delete only dir contents
       find:
         paths: "{{ path_var | regex_replace('/\\*$', '') }}"
         file_type: any
