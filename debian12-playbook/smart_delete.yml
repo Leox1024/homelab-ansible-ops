@@ -13,15 +13,21 @@
       fail:
         msg: "Refusing to operate on critical path: {{ path_var }}"
       when:
-        - safety_checks
+        - safety_checks | bool
         - path_var.rstrip('/') in ["/", "/etc", "/var", "/bin", "/boot", "/usr", "/lib", "/lib64", "/sbin", "/dev", "/proc", "/sys"]
 
-    - name: Handle wildcard deletion - delete only contents
+    - name: Find files to delete when wildcard is used
+      find:
+        paths: "{{ path_var | regex_replace('/\\*$', '') }}"
+        file_type: any
+      register: files_to_delete
+      when: path_var.endswith('*')
+
+    - name: Delete files matched by wildcard
       file:
-        path: "{{ item }}"
+        path: "{{ item.path }}"
         state: absent
-      with_fileglob:
-        - "{{ path_var }}"
+      loop: "{{ files_to_delete.files }}"
       when: path_var.endswith('*')
 
     - name: Normalize path (remove trailing slashes)
@@ -41,7 +47,7 @@
         state: absent
       when:
         - not path_var.endswith('*')
-        - path_stat.stat.isdir
+        - path_stat.stat.isdir | default(false)
 
     - name: Delete a file
       file:
@@ -49,5 +55,5 @@
         state: absent
       when:
         - not path_var.endswith('*')
-        - path_stat.stat.exists
+        - path_stat.stat.exists | default(false)
         - path_stat.stat.isdir is not defined or not path_stat.stat.isdir
