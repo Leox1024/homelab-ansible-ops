@@ -42,7 +42,8 @@
       file:
         path: "{{ path_var }}"
         state: absent
-      when: path_stat.stat.isfile | default(false)
+        meta: end_play
+      when: path_stat.stat.isfile
 
 #-----------------------------------------------------#
 
@@ -73,4 +74,5 @@
       file:
         path: "{{ path_var }}"
         state: absent
-      when: path_stat.stat.isdir | default(false)
+        meta: end_play
+      when: path_stat.stat.isdir
