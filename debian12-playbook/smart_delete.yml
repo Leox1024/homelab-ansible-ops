@@ -32,7 +32,7 @@
 
     - name: DEBUG - Path stat result
       debug:
-      var: path_stat
+        var: path_stat
     
 #-----------------------------------------------------#
 
