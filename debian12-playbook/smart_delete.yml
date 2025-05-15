@@ -46,8 +46,11 @@
       file:
         path: "{{ path_var }}"
         state: absent
-        meta: end_play
-      when: path_stat.stat.isreg | default(false)
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isreg | default(false)
+    
+    - name: End play if file was deleted
+      meta: end_play
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isreg | default(false)
 
 #-----------------------------------------------------#
 
