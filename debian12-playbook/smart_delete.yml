@@ -42,8 +42,8 @@
       file:
         path: "{{ path_var }}"
         state: absent
+        meta: end_play  # Stop play after deleting file
       when: path_stat.stat.isfile | default(false)
-      meta: end_play  # Stop play after deleting file
 
 #-----------------------------------------------------#
 
