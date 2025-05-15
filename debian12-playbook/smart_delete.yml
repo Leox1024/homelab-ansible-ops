@@ -5,9 +5,19 @@
   become_method: sudo
 
   vars:
-    path_var: "/var/test/download"  # ← single file o directory
+    path_var: "/var/test/download"  # Può essere un file o una directory
 
   tasks:
+    - name: Ensure path_var does not end with wildcard or slash
+      fail:
+        msg: "Invalid path '{{ path_var }}'. Do not use globs (*, ?) or trailing slashes."
+      when: path_var is search(".*[*/?]$")
+
+    - name: Check for dangerous paths
+      fail:
+        msg: "Refusing to operate on critical path: {{ path_var }}"
+      when: path_var in ["/", "/etc", "/var", "/boot", "/bin", "/usr", "/lib", "/lib64", "/sbin", "/dev", "/proc", "/sys"]
+
     - name: Stat the path
       stat:
         path: "{{ path_var }}"
@@ -18,12 +28,13 @@
         msg: "The path {{ path_var }} does not exist!"
       when: not path_stat.stat.exists
 
-    - name: Delete the entire directory
+    - name: Delete contents of directory (not the directory itself)
       file:
-        path: "{{ path_var }}"
+        path: "{{ item.path }}"
         state: absent
+      with_fileglob:
+        - "{{ path_var }}/*"
       when:
-        - path_stat.stat.exists
         - path_stat.stat.isdir
 
     - name: Delete the file
@@ -31,5 +42,4 @@
         path: "{{ path_var }}"
         state: absent
       when:
-        - path_stat.stat.exists
-        - not path_stat.stat.isdir
+        - path_stat.stat.isfile
