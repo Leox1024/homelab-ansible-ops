@@ -9,10 +9,10 @@
     safety_checks: true          # if you set this to false you will be able to delete "critical" folder such as /etc, /boot, ecc
 
   # path_var accept:
-  # /path/to/remove = will delete "remove" file 
+  # /path/to/remove = will delete "remove" file or dir (depend if remove is a file or dir)
   # /path/to/remove/ = will delete "remove" folder
   # /path/to/remove/* = will delete EVERY file or dir inside "remove" folder
-  # /path/to/remove/file.txt = will delete "file.txt" file only 
+  # /path/to/remove/file.txt = will delete "file.txt" only 
 
   tasks:
 
