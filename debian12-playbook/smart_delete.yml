@@ -49,4 +49,5 @@
         state: absent
       when:
         - not path_var.endswith('*')
-        - path_stat.stat.isfile
+        - path_stat.stat.exists
+        - path_stat.stat.isdir is not defined or not path_stat.stat.isdir
