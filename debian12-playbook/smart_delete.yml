@@ -74,5 +74,5 @@
       file:
         path: "{{ path_var }}"
         state: absent
+        meta: end_play  # Stop play after deleting the entire directory
       when: path_stat.stat.isdir | default(false)
-      meta: end_play  # Stop play after deleting the entire directory
