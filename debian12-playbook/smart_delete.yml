@@ -14,7 +14,7 @@
         msg: "Refusing to operate on critical path: {{ path_var }}"
       when:
         - safety_checks
-        - path_var | regex_search('^(/|/etc$|/var$|/bin$|/boot$|/usr$|/lib$|/lib64$|/sbin$|/dev$|/proc$|/sys$)')
+        - path_var.rstrip('/') in ["/", "/etc", "/var", "/bin", "/boot", "/usr", "/lib", "/lib64", "/sbin", "/dev", "/proc", "/sys"]
 
     - name: Handle wildcard deletion - delete only contents
       file:
