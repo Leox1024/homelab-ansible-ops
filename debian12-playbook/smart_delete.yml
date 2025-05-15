@@ -75,4 +75,4 @@
         path: "{{ path_var }}"
         state: absent
         meta: end_play
-      when: path_stat.stat.isdir
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isdir | default(false)
