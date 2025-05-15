@@ -5,41 +5,48 @@
   become_method: sudo
 
   vars:
-    path_var: "/var/test/download"  # Può essere un file o una directory
+    path_var: "/mnt/extdisk1/downloads/*"  # accetta /path, /path/, /path/*
+    safety_checks: true                    # ✅ abilitabile/disattivabile
 
   tasks:
-    - name: Ensure path_var does not end with wildcard or slash
-      fail:
-        msg: "Invalid path '{{ path_var }}'. Do not use globs (*, ?) or trailing slashes."
-      when: path_var is search(".*[*/?]$")
-
-    - name: Check for dangerous paths
+    - name: Fail on dangerous paths (/, /etc, etc.)
       fail:
         msg: "Refusing to operate on critical path: {{ path_var }}"
-      when: path_var in ["/", "/etc", "/var", "/boot", "/bin", "/usr", "/lib", "/lib64", "/sbin", "/dev", "/proc", "/sys"]
+      when:
+        - safety_checks
+        - path_var | regex_search('^(/|/etc$|/var$|/bin$|/boot$|/usr$|/lib$|/lib64$|/sbin$|/dev$|/proc$|/sys$)')
+
+    - name: Handle wildcard deletion - delete only contents
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_fileglob:
+        - "{{ path_var }}"
+      when: path_var.endswith('*')
+
+    - name: Normalize path (remove trailing slashes)
+      set_fact:
+        norm_path: "{{ path_var.rstrip('/') }}"
+      when: not path_var.endswith('*')
 
     - name: Stat the path
       stat:
-        path: "{{ path_var }}"
+        path: "{{ norm_path }}"
       register: path_stat
+      when: not path_var.endswith('*')
 
-    - name: Fail if path does not exist
-      fail:
-        msg: "The path {{ path_var }} does not exist!"
-      when: not path_stat.stat.exists
-
-    - name: Delete contents of directory (not the directory itself)
+    - name: Delete a directory completely
       file:
-        path: "{{ item.path }}"
+        path: "{{ norm_path }}"
         state: absent
-      with_fileglob:
-        - "{{ path_var }}/*"
       when:
+        - not path_var.endswith('*')
         - path_stat.stat.isdir
 
-    - name: Delete the file
+    - name: Delete a file
       file:
-        path: "{{ path_var }}"
+        path: "{{ norm_path }}"
         state: absent
       when:
+        - not path_var.endswith('*')
         - path_stat.stat.isfile
