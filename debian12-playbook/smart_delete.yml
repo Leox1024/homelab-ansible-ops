@@ -76,10 +76,15 @@
       loop: "{{ files_to_delete.files }}"
       when: path_var.endswith('*')
 
+#-----------------------------------------------------#
+
     # Classic delete of entire dir /path/to/delete
     - name: Delete the entire directory
       file:
         path: "{{ path_var }}"
         state: absent
-        meta: end_play
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isdir | default(false)
+
+    - name: End play if dir was deleted
+      meta: end_play
       when: path_stat.stat.exists | default(false) and path_stat.stat.isdir | default(false)
