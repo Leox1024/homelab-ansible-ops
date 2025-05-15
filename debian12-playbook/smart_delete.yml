@@ -30,6 +30,10 @@
         - safety_checks | bool
         - path_var.rstrip('/') in ["/", "/etc", "/var", "/bin", "/boot", "/usr", "/lib", "/lib64", "/sbin", "/dev", "/proc", "/sys"]
 
+    - name: DEBUG - Path stat result
+      debug:
+      var: path_stat
+    
 #-----------------------------------------------------#
 
     # File check and deletion
