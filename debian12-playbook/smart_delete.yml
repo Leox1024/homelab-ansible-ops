@@ -5,24 +5,63 @@
   become_method: sudo
 
   vars:
-    path_var: "/mnt/extdisk1/downloads/*"  # accetta /path, /path/, /path/*
-    safety_checks: true                    # ✅ abilitabile/disattivabile
+    path_var: "/path/to/remove"  # set the dir or file to delete /path, /path/, /path/*, /path/file.txt (read down below for more info)
+    safety_checks: true          # if you set this to false you will be able to delete "critical" folder such as /etc, /boot, ecc
+
+  # path_var accept:
+  # /path/to/remove = will delete "remove" file 
+  # /path/to/remove/ = will delete "remove" folder
+  # /path/to/remove/* = will delete EVERY file or dir inside "remove" folder
+  # /path/to/remove/file.txt = will delete "file.txt" file only 
 
   tasks:
-    - name: Fail on dangerous paths (/, /etc, etc.)
+
+#-----------------------------------------------------#
+  
+    - name: Stat the path
+      stat:
+        path: "{{ path_var }}"
+      register: path_stat
+
+    - name: Fail on dangerous paths (/, /etc, /boot, ecc)
       fail:
         msg: "Refusing to operate on critical path: {{ path_var }}"
       when:
         - safety_checks | bool
         - path_var.rstrip('/') in ["/", "/etc", "/var", "/bin", "/boot", "/usr", "/lib", "/lib64", "/sbin", "/dev", "/proc", "/sys"]
 
-    - name: Find files to delete when wildcard is used
+#-----------------------------------------------------#
+
+    # File check and deletion
+    - name: Path is a file
+      debug:
+        msg: "{{ path_var }} is a file: deleting..."
+      when: path_stat.stat.isfile | default(false)
+
+    - name: Delete file
+      file:
+        path: "{{ path_var }}"
+        state: absent
+      when: path_stat.stat.isfile | default(false)
+      meta: end_play  # Stop play after deleting file
+
+#-----------------------------------------------------#
+
+    # Directory check and deletion
+    - name: Path is a directory
+      debug:
+        msg: "{{ path_var }} is a directory: deleting..."
+      when: path_stat.stat.isdir | default(false)
+    
+    # Delete inside dir /path/to/delete/*
+    - name: Handle wildcard deletion - delete only contents
       find:
         paths: "{{ path_var | regex_replace('/\\*$', '') }}"
         file_type: any
       register: files_to_delete
       when: path_var.endswith('*')
-
+      
+    # Delete inside dir /path/to/delete/*
     - name: Delete files matched by wildcard
       file:
         path: "{{ item.path }}"
@@ -30,30 +69,10 @@
       loop: "{{ files_to_delete.files }}"
       when: path_var.endswith('*')
 
-    - name: Normalize path (remove trailing slashes)
-      set_fact:
-        norm_path: "{{ path_var.rstrip('/') }}"
-      when: not path_var.endswith('*')
-
-    - name: Stat the path
-      stat:
-        path: "{{ norm_path }}"
-      register: path_stat
-      when: not path_var.endswith('*')
-
-    - name: Delete a directory completely
+    # Classic delete of entire dir /path/to/delete
+    - name: Delete the entire directory
       file:
-        path: "{{ norm_path }}"
+        path: "{{ path_var }}"
         state: absent
-      when:
-        - not path_var.endswith('*')
-        - path_stat.stat.isdir | default(false)
-
-    - name: Delete a file
-      file:
-        path: "{{ norm_path }}"
-        state: absent
-      when:
-        - not path_var.endswith('*')
-        - path_stat.stat.exists | default(false)
-        - path_stat.stat.isdir is not defined or not path_stat.stat.isdir
+      when: path_stat.stat.isdir | default(false)
+      meta: end_play  # Stop play after deleting the entire directory
