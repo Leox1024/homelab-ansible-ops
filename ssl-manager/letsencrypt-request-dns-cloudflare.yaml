@@ -1,0 +1,46 @@
+- name: Get SSL certificate for specific domain via Cloudflare DNS token
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    domain_name: "cloud.leox.me"
+    email: "admin@leox.me"
+    output_dir: "./files/ssl/{{ domain_name }}"
+    cloudflare_token: "abcdefg1234567"
+
+  tasks:
+
+    - name: Check if certbot and DNS plugin are installed
+      ansible.builtin.command: >
+        bash -c "which certbot && pip show certbot-dns-cloudflare"
+      register: certbot_check
+      failed_when: certbot_check.rc != 0
+      changed_when: false
+
+    - name: Create directory to store certs
+      file:
+        path: "{{ output_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Request SSL certificate using Cloudflare token
+      ansible.builtin.command: >
+        certbot certonly
+        --dns-cloudflare
+        --dns-cloudflare-propagation-seconds 30
+        -d {{ domain_name }}
+        --agree-tos
+        --non-interactive
+        --email {{ email }}
+        --config-dir {{ output_dir }}/config
+        --work-dir {{ output_dir }}/work
+        --logs-dir {{ output_dir }}/logs
+      environment:
+        CLOUDFLARE_API_TOKEN: "{{ cloudflare_token }}"
+      args:
+        creates: "{{ output_dir }}/config/live/{{ domain_name }}/fullchain.pem"
+
+    - name: Cert generated
+      debug:
+        msg: "✅ Certificate for {{ domain_name }} is now located in {{ output_dir }}/config/live/{{ domain_name }}/"
