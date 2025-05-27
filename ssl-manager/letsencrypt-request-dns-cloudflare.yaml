@@ -14,7 +14,7 @@
 
     - name: Check if certbot and DNS plugin are installed
       ansible.builtin.command: >
-        bash -c "which certbot && pip show certbot-dns-cloudflare"
+        bash -c "which certbot"
       register: certbot_check
       failed_when: certbot_check.rc != 0
       changed_when: false
