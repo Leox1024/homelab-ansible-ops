@@ -29,7 +29,6 @@
       ansible.builtin.command: >
         certbot certonly
         --dns-cloudflare
-        --dns-cloudflare-propagation-seconds 30
         -d {{ domain_name }}
         --agree-tos
         --non-interactive
