@@ -24,12 +24,18 @@
         path: "{{ output_dir }}"
         state: directory
         mode: '0755'
+
     - name: Generate Cloudflare credentials file
       copy:
         content: |
           dns_cloudflare_api_token = {{ cloudflare_token }}
         dest: "/tmp/cloudflare-{{ domain_name }}.ini"
         mode: '0600'
+
+    - name: Cleanup old dir
+      file:
+        path: "{{ output_dir }}"
+        state: absent
 
     - name: Request SSL certificate using Cloudflare token
       ansible.builtin.command: >
