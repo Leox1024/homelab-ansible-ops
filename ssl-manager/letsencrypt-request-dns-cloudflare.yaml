@@ -29,6 +29,7 @@
       ansible.builtin.command: >
         certbot certonly
         --dns-cloudflare
+        --dns-cloudflare-credentials /dev/null
         -d {{ domain_name }}
         --agree-tos
         --non-interactive
