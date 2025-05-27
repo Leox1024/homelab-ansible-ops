@@ -4,8 +4,8 @@
   gather_facts: false
 
   vars:
-    domain_name: "cloud.leox.me"
-    email: "admin@leox.me"
+    domain_name: "domain.com"
+    email: "admin@domain.com"
     output_dir: "./files/ssl/{{ domain_name }}"
     cloudflare_token: "abcdefg1234567"
 
