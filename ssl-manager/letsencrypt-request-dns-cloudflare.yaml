@@ -1,8 +1,9 @@
 - name: Get SSL certificate for specific domain via Cloudflare DNS token
-  hosts: localhost
-  connection: local
-  gather_facts: false
-
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+  
   vars:
     domain_name: "domain.com"
     email: "admin@domain.com"
