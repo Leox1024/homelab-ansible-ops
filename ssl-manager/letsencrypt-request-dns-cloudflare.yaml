@@ -24,12 +24,18 @@
         path: "{{ output_dir }}"
         state: directory
         mode: '0755'
+    - name: Generate Cloudflare credentials file
+      copy:
+        content: |
+          dns_cloudflare_api_token = {{ cloudflare_token }}
+        dest: "/tmp/cloudflare-{{ domain_name }}.ini"
+        mode: '0600'
 
     - name: Request SSL certificate using Cloudflare token
       ansible.builtin.command: >
         certbot certonly
         --dns-cloudflare
-        --dns-cloudflare-credentials /dev/null
+        --dns-cloudflare-credentials /tmp/cloudflare-{{ domain_name }}.ini
         -d {{ domain_name }}
         --agree-tos
         --non-interactive
@@ -41,6 +47,11 @@
         CLOUDFLARE_API_TOKEN: "{{ cloudflare_token }}"
       args:
         creates: "{{ output_dir }}/config/live/{{ domain_name }}/fullchain.pem"
+    
+    - name: Cleanup Cloudflare credentials file
+      file:
+        path: "/tmp/cloudflare-{{ domain_name }}.ini"
+        state: absent
 
     - name: Cert generated
       debug:
