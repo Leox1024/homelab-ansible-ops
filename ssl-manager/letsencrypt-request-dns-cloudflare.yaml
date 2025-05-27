@@ -7,7 +7,7 @@
   vars:
     domain_name: "domain.com"
     email: "admin@domain.com"
-    output_dir: "./files/ssl/{{ domain_name }}"
+    output_dir: "./"
     cloudflare_token: "abcdefg1234567"
 
   tasks:
