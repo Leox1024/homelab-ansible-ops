@@ -6,7 +6,7 @@
   become_method: sudo
 
   vars:
-    # --- Main variables (modify only here).
+    # Main variables (modify only here)
     domain_name: "domain.com"           # ❗ Replace with your domain
     email: "admin@domain.com"           # ❗ Replace with your email
     cloudflare_token: "abcdefg1234567"  # ❗ Replace with your actual token
@@ -24,7 +24,6 @@
         update_cache: yes
 
     # 2) Create the directory for storing Cloudflare credentials
-    #    Principle: keep it in a fixed location so future renewals can reuse it.
     - name: Create directory for Cloudflare credentials
       file:
         path: "/etc/letsencrypt/secrets"
@@ -34,7 +33,6 @@
         mode: "0700"
 
     # 3) Write the Cloudflare token file in a fixed location
-    #    Certbot uses this file to perform DNS-01 challenges.
     - name: Write Cloudflare credentials file for {{ domain_name }}
       copy:
         dest: "{{ cf_credentials_path }}"
@@ -44,7 +42,7 @@
         group: root
         mode: "0600"
 
-    # 4) Check if the certificate already exists under /etc/letsencrypt/live/{{ domain_name }}/
+    # 4) Check if the certificate already exists
     - name: Check existence of certificate for {{ domain_name }}
       stat:
         path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
@@ -65,8 +63,7 @@
       when: not cert_stat.stat.exists
       register: certbot_initial
 
-    # 6) If the certificate already exists (issued before),
-    #    decide whether to force renewal or let Certbot handle automatic renewal.
+    # 6) If the certificate already exists, optionally force renewal
     - name: Force renewal of certificate (if requested)
       command: >
         certbot certonly
@@ -79,7 +76,7 @@
         --force-renewal
       when:
         - cert_stat.stat.exists
-        - force_renew | default(false)    # To force renewal via CLI: -e force_renew=true
+        - force_renew | default(false)
       register: certbot_forcerenew
 
     # 7) Final debug message to indicate the result
@@ -94,5 +91,5 @@
           You can find it in /etc/letsencrypt/live/{{ domain_name }}/
           {% else %}
           ℹ️ Certificate for {{ domain_name }} already exists and was not force renewed.
-          Check `/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem`.
+          Check /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem
           {% endif %}
