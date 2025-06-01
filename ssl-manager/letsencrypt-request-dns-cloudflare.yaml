@@ -106,12 +106,12 @@
       debug:
         msg: |
           {% if certbot_initial is defined and certbot_initial.rc == 0 %}
-            ✅ Primo certificato per {{ domain_name }} creato con successo. 
-            Lo trovi in /etc/letsencrypt/live/{{ domain_name }}/
+          ✅ Primo certificato per {{ domain_name }} creato con successo. 
+          Lo trovi in /etc/letsencrypt/live/{{ domain_name }}/
           {% elif certbot_forcerenew is defined and certbot_forcerenew.rc == 0 %}
-            🔄 Certificato per {{ domain_name }} rigenerato (forzato) con successo.
-            Lo trovi in /etc/letsencrypt/live/{{ domain_name }}/
+          🔄 Certificato per {{ domain_name }} rigenerato (forzato) con successo.
+          Lo trovi in /etc/letsencrypt/live/{{ domain_name }}/
           {% else %}
-            ℹ️ Certificato per {{ domain_name }} era già presente e non è stato forzato il rinnovo. 
-            Controlla `/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem`.
+          ℹ️ Certificato per {{ domain_name }} era già presente e non è stato forzato il rinnovo. 
+          Controlla `/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem`.
           {% endif %}
