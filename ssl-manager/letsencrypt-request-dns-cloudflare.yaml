@@ -6,15 +6,12 @@
   become_method: sudo
 
   vars:
-    # Main variables (modify only here)
     domain_name: "domain.com"           # ❗ Replace with your domain
     email: "admin@domain.com"           # ❗ Replace with your email
     cloudflare_token: "abcdefg1234567"  # ❗ Replace with your actual token
     cf_credentials_path: "/etc/letsencrypt/secrets/cloudflare-{{ domain_name }}.ini"
 
   tasks:
-
-    # 1) Install Certbot and the DNS-Cloudflare plugin
     - name: Install Certbot and DNS-Cloudflare plugin
       apt:
         name:
@@ -23,7 +20,6 @@
         state: present
         update_cache: yes
 
-    # 2) Create the directory for storing Cloudflare credentials
     - name: Create directory for Cloudflare credentials
       file:
         path: "/etc/letsencrypt/secrets"
@@ -32,7 +28,6 @@
         group: root
         mode: "0700"
 
-    # 3) Write the Cloudflare token file in a fixed location
     - name: Write Cloudflare credentials file for {{ domain_name }}
       copy:
         dest: "{{ cf_credentials_path }}"
@@ -42,13 +37,11 @@
         group: root
         mode: "0600"
 
-    # 4) Check if the certificate already exists
     - name: Check existence of certificate for {{ domain_name }}
       stat:
         path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
       register: cert_stat
 
-    # 5) If the certificate does not exist, perform the initial issuance
     - name: Initial issuance of SSL certificate for {{ domain_name }}
       command: >
         certbot certonly
@@ -63,7 +56,6 @@
       when: not cert_stat.stat.exists
       register: certbot_initial
 
-    # 6) If the certificate already exists, optionally force renewal
     - name: Force renewal of certificate (if requested)
       command: >
         certbot certonly
@@ -79,8 +71,8 @@
         - force_renew | default(false)
       register: certbot_forcerenew
 
-    # 7) Final debug message to indicate the result
-    - name: issuance/renewal result
+    - name: Debug: issuance/renewal result
+      debug:
         msg: |
           {% if certbot_initial is defined and (certbot_initial.rc | default(1)) == 0 %}
           ✅ Initial certificate for {{ domain_name }} created successfully.
