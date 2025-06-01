@@ -79,7 +79,7 @@
     - name: Determine if forced renewal is needed
       when: cert_stat.stat.exists
       set_fact:
-        force_renew: "{{ cert_days_left <= expiration_threshold }}"
+        force_renew: "{{ (cert_days_left | int) <= expiration_threshold }}"
 
     - name: Force renewal of certificate if expiring within threshold
       command: >
