@@ -10,6 +10,7 @@
     email: "admin@domain.com"           # ❗ Replace with your email
     cloudflare_token: "abcdefg1234567"  # ❗ Replace with your actual token
     cf_credentials_path: "/etc/letsencrypt/secrets/cloudflare-{{ domain_name }}.ini"
+    expiration_threshold: 41            # days before expiration to force renewal
 
   tasks:
     # 1) Install Certbot and the DNS-Cloudflare plugin
@@ -61,8 +62,24 @@
       when: not cert_stat.stat.exists
       register: certbot_initial
 
-    # 6) If the certificate already exists, optionally force renewal
-    - name: Force renewal of certificate (if requested)
+    # 5a) If the certificate exists, get its expiration date
+    - name: Retrieve certificate expiration date
+      shell: >
+        openssl x509 -in /etc/letsencrypt/live/{{ domain_name }}/cert.pem -noout -enddate
+      register: cert_enddate_raw
+      when: cert_stat.stat.exists
+      changed_when: false
+
+    - name: Calculate days until certificate expires
+      when: cert_stat.stat.exists
+      set_fact:
+        cert_end_ts: "{{ (cert_enddate_raw.stdout | regex_replace('^notAfter=(.*)$','\\1')) | to_datetime('%b %d %H:%M:%S %Y %Z') }}"
+        now_ts: "{{ lookup('pipe','date +\"%b %d %H:%M:%S %Y %Z\"') | to_datetime('%b %d %H:%M:%S %Y %Z') }}"
+        cert_days_left: "{{ ((cert_end_ts - now_ts).total_seconds() // 86400) | int }}"
+        force_renew: "{{ cert_days_left <= expiration_threshold }}"
+
+    # 6) If the certificate already exists and is near expiration, force renewal
+    - name: Force renewal of certificate if expiring within threshold
       command: >
         certbot certonly
         --dns-cloudflare
@@ -87,7 +104,9 @@
           {% elif certbot_forcerenew is defined and (certbot_forcerenew.rc | default(1)) == 0 %}
             🔄 Certificate for {{ domain_name }} was renewed (forced) successfully.
             You can find it in /etc/letsencrypt/live/{{ domain_name }}/
+          {% elif cert_stat.stat.exists %}
+            ℹ️ Certificate for {{ domain_name }} already exists and is valid ({{ cert_days_left }} days until expiration).
+            No renewal needed at this time.
           {% else %}
-            ℹ️ Certificate for {{ domain_name }} already exists and was not force renewed.
-            Check /etc/letsencrypt/live/{{ domain_name }}/fullchain.pem
+            ❌ Unexpected state. Check logs for details.
           {% endif %}
