@@ -74,14 +74,13 @@
         --email "{{ email }}"
         --force-renewal
       when:
-        - "cert_stat.stat.exists"
-        - "force_renew | default(false)"
+        - cert_stat.stat.exists
+        - force_renew | default(false)
       register: certbot_forcerenew
 
     # 7) Final debug message to indicate the result
-    - name: Debug: issuance/renewal result
-      debug:
-        msg: |
+    - name: issuance/renewal result
+        msg:
           {% if certbot_initial is defined and (certbot_initial.rc | default(1)) == 0 %}
             ✅ Initial certificate for {{ domain_name }} created successfully.
             You can find it in /etc/letsencrypt/live/{{ domain_name }}/
