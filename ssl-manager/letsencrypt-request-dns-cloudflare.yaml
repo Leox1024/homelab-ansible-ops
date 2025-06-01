@@ -1,41 +1,31 @@
-- name: Ottenimento/Rinnovo certificato SSL per un dominio con DNS-Cloudflare
+---
+- name: Obtain/Renew SSL Certificate for a Domain Using Cloudflare DNS
   hosts: all
   become: yes
   become_user: root
   become_method: sudo
 
   vars:
-    # --- Variabili principali (cambia solo qui).
-    # Dominio per cui ottenere/rinnovare il certificato
-    domain_name: "domain.com"           # ❗ Cambia con il tuo dominio
-    # Email per le notifiche Let’s Encrypt
-    email: "admin@domain.com"           # ❗ Cambia con la tua email
-    # API token Cloudflare
-    cloudflare_token: "abcdefg1234567"  # ❗ Cambia con il tuo reale token
-    # Percorso stabile per le credenziali DNS-Cloudflare
+    # --- Main variables (modify only here).
+    domain_name: "domain.com"           # ❗ Replace with your domain
+    email: "admin@domain.com"           # ❗ Replace with your email
+    cloudflare_token: "abcdefg1234567"  # ❗ Replace with your actual token
     cf_credentials_path: "/etc/letsencrypt/secrets/cloudflare-{{ domain_name }}.ini"
 
   tasks:
 
-    # 1) Installazione di Certbot e del plugin DNS-Cloudflare
-    - name: Installa Certbot e plugin DNS-Cloudflare
+    # 1) Install Certbot and the DNS-Cloudflare plugin
+    - name: Install Certbot and DNS-Cloudflare plugin
       apt:
         name:
           - certbot
           - python3-certbot-dns-cloudflare
         state: present
         update_cache: yes
-      # Se usi RHEL/CentOS, sostituisci con yum o dnf:
-      # - name: Installa Certbot e plugin DNS-Cloudflare (CentOS/RHEL)
-      #   yum:
-      #     name:
-      #       - certbot
-      #       - python3-certbot-dns-cloudflare
-      #     state: present
 
-    # 2) Creo la directory che conterrà il file di credenziali Cloudflare
-    #    Principio: la mantengo sempre, così i rinnovi futuri la troveranno senza ricrearla.
-    - name: Crea la directory per le credenziali Cloudflare
+    # 2) Create the directory for storing Cloudflare credentials
+    #    Principle: keep it in a fixed location so future renewals can reuse it.
+    - name: Create directory for Cloudflare credentials
       file:
         path: "/etc/letsencrypt/secrets"
         state: directory
@@ -43,9 +33,9 @@
         group: root
         mode: "0700"
 
-    # 3) Scrivo il file con il token Cloudflare in un percorso fisso
-    #    Questo serve a Certbot per il challenge DNS.
-    - name: Scrivi file credenziali Cloudflare per {{ domain_name }}
+    # 3) Write the Cloudflare token file in a fixed location
+    #    Certbot uses this file to perform DNS-01 challenges.
+    - name: Write Cloudflare credentials file for {{ domain_name }}
       copy:
         dest: "{{ cf_credentials_path }}"
         content: |
@@ -54,15 +44,15 @@
         group: root
         mode: "0600"
 
-    # 4) Controllo se il certificato esiste già in /etc/letsencrypt/live/{{ domain_name }}/
-    - name: Verifica esistenza certificato di {{ domain_name }}
+    # 4) Check if the certificate already exists under /etc/letsencrypt/live/{{ domain_name }}/
+    - name: Check existence of certificate for {{ domain_name }}
       stat:
         path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
       register: cert_stat
 
-    # 5) Se non esiste ancora, eseguo il primo rilascio del certificato
-    - name: Rilascio iniziale certificato SSL per {{ domain_name }}
-      ansible.builtin.command: >
+    # 5) If the certificate does not exist, perform the initial issuance
+    - name: Initial issuance of SSL certificate for {{ domain_name }}
+      command: >
         certbot certonly
         --dns-cloudflare
         --dns-cloudflare-credentials "{{ cf_credentials_path }}"
@@ -75,19 +65,10 @@
       when: not cert_stat.stat.exists
       register: certbot_initial
 
-    # 6) Se esiste già (quindi ho già emesso almeno una volta),
-    #    posso decidere se voglio forzare il rinnovo o lasciare che Certbot gestisca il rinnovo automatico.
-    #
-    #    6.a) Se voglio solo “accertarmi” che la configurazione sia a posto (ma non forzo rinnovo),
-    #         mi limito a far nulla: la struttura di Certbot prevede che un cron/systemd timer
-    #         predefinito faccia il renew 2 volte al giorno.
-    #
-    #    6.b) Se invece voglio rigenerare/subito (anche se mancano ancora 60 giorni),
-    #         ho bisogno di forzare il rinnovo con --force-renewal.
-    #
-    #    Per semplicità, qui mostro come aggiungere un flag variabile “force_renew”:
-    - name: Forza rinnovo certificato (se richiesto)
-      ansible.builtin.command: >
+    # 6) If the certificate already exists (issued before),
+    #    decide whether to force renewal or let Certbot handle automatic renewal.
+    - name: Force renewal of certificate (if requested)
+      command: >
         certbot certonly
         --dns-cloudflare
         --dns-cloudflare-credentials "{{ cf_credentials_path }}"
@@ -98,20 +79,20 @@
         --force-renewal
       when:
         - cert_stat.stat.exists
-        - force_renew | default(false)    # Se vuoi forzare da CLI: -e force_renew=true
+        - force_renew | default(false)    # To force renewal via CLI: -e force_renew=true
       register: certbot_forcerenew
 
-    # 7) Debug finale per segnalare risultato
-    - name: risultato emissione/rinnovo
+    # 7) Final debug message to indicate the result
+    - name: Debug: issuance/renewal result
       debug:
         msg: |
-          {% if certbot_initial is defined and certbot_initial.rc == 0 %}
-          ✅ Primo certificato per {{ domain_name }} creato con successo. 
-          Lo trovi in /etc/letsencrypt/live/{{ domain_name }}/
-          {% elif certbot_forcerenew is defined and certbot_forcerenew.rc == 0 %}
-          🔄 Certificato per {{ domain_name }} rigenerato (forzato) con successo.
-          Lo trovi in /etc/letsencrypt/live/{{ domain_name }}/
+          {% if certbot_initial is defined and (certbot_initial.rc | default(1)) == 0 %}
+          ✅ Initial certificate for {{ domain_name }} created successfully.
+          You can find it in /etc/letsencrypt/live/{{ domain_name }}/
+          {% elif certbot_forcerenew is defined and (certbot_forcerenew.rc | default(1)) == 0 %}
+          🔄 Certificate for {{ domain_name }} was renewed (forced) successfully.
+          You can find it in /etc/letsencrypt/live/{{ domain_name }}/
           {% else %}
-          ℹ️ Certificato per {{ domain_name }} era già presente e non è stato forzato il rinnovo. 
-          Controlla `/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem`.
+          ℹ️ Certificate for {{ domain_name }} already exists and was not force renewed.
+          Check `/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem`.
           {% endif %}
