@@ -71,11 +71,15 @@
       when: cert_stat.stat.exists
       changed_when: false
 
-    - name: Calculate days until certificate expires and set force_renew
+    - name: Calculate days until certificate expires
+      when: cert_stat.stat.exists
       set_fact:
         cert_days_left: "{{ ((cert_enddate_raw.stdout | regex_replace('^notAfter=(.*)$','\\1')) | to_datetime('%b %d %H:%M:%S %Y %Z') - lookup('pipe','date +\"%b %d %H:%M:%S %Y %Z\"') | to_datetime('%b %d %H:%M:%S %Y %Z')).total_seconds() // 86400 | int }}"
-        force_renew: "{{ cert_days_left <= expiration_threshold }}"
+
+    - name: Determine if forced renewal is needed
       when: cert_stat.stat.exists
+      set_fact:
+        force_renew: "{{ cert_days_left <= expiration_threshold }}"
 
     - name: Force renewal of certificate if expiring within threshold
       command: >
