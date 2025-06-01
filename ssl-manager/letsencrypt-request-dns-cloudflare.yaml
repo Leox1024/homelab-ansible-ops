@@ -1,4 +1,3 @@
----
 - name: Obtain/Renew SSL Certificate for a Domain Using Cloudflare DNS
   hosts: all
   become: yes
@@ -80,7 +79,8 @@
 
     # 7) Final debug message to indicate the result
     - name: issuance/renewal result
-        msg:
+      debug:
+        msg: |
           {% if certbot_initial is defined and (certbot_initial.rc | default(1)) == 0 %}
             ✅ Initial certificate for {{ domain_name }} created successfully.
             You can find it in /etc/letsencrypt/live/{{ domain_name }}/
