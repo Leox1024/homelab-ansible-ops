@@ -74,7 +74,7 @@
         --email "{{ email }}"
         --force-renewal
       when:
-        - cert_stat.stat.exists
+        - "cert_stat.stat.exists"
         - "force_renew | default(false)"
       register: certbot_forcerenew
 
