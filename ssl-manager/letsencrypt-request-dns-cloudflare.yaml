@@ -21,6 +21,7 @@
     - name: Install Certbot and DNS-Cloudflare plugin
       apt:
         name:
+          - openssl
           - certbot
           - python3-certbot-dns-cloudflare
         state: present
