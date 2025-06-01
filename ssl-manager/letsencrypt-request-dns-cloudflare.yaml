@@ -1,3 +1,8 @@
+# Issues or renews a Let’s Encrypt cert via DNS-Cloudflare when <= expiration_threshold days remain.
+# Set domain_name, email, cloudflare_token, and expiration_threshold above.
+# Use this playbook for "barebone" renew certificate using certbot
+# This script will not probably not work with other plugin like nginx, ecc
+
 - name: Obtain/Renew SSL Certificate for a Domain Using Cloudflare DNS
   hosts: all
   become: yes
@@ -13,7 +18,6 @@
     expiration_threshold: 41            # days before expiration to force renewal
 
   tasks:
-    # 1) Install Certbot and the DNS-Cloudflare plugin
     - name: Install Certbot and DNS-Cloudflare plugin
       apt:
         name:
@@ -22,7 +26,6 @@
         state: present
         update_cache: yes
 
-    # 2) Create the directory for storing Cloudflare credentials
     - name: Create directory for Cloudflare credentials
       file:
         path: "/etc/letsencrypt/secrets"
@@ -31,7 +34,6 @@
         group: root
         mode: "0700"
 
-    # 3) Write the Cloudflare token file in a fixed location
     - name: Write Cloudflare credentials file for {{ domain_name }}
       copy:
         dest: "{{ cf_credentials_path }}"
@@ -41,13 +43,12 @@
         group: root
         mode: "0600"
 
-    # 4) Check if the certificate already exists
     - name: Check existence of certificate for {{ domain_name }}
       stat:
         path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
       register: cert_stat
 
-    # 5) If the certificate does not exist, perform the initial issuance
+    # If certificate does not exist -> perform the initial issuance
     - name: Initial issuance of SSL certificate for {{ domain_name }}
       command: >
         certbot certonly
@@ -62,7 +63,7 @@
       when: not cert_stat.stat.exists
       register: certbot_initial
 
-    # 5a) If the certificate exists, get its expiration date
+    # If certificate exists -> get expiration date
     - name: Retrieve certificate expiration date
       shell: >
         openssl x509 -in /etc/letsencrypt/live/{{ domain_name }}/cert.pem -noout -enddate
@@ -78,7 +79,6 @@
         cert_days_left: "{{ ((cert_end_ts - now_ts).total_seconds() // 86400) | int }}"
         force_renew: "{{ cert_days_left <= expiration_threshold }}"
 
-    # 6) If the certificate already exists and is near expiration, force renewal
     - name: Force renewal of certificate if expiring within threshold
       command: >
         certbot certonly
@@ -94,7 +94,7 @@
         - force_renew | default(false)
       register: certbot_forcerenew
 
-    # 7) Final debug message to indicate the result
+    # Final debug message
     - name: issuance/renewal result
       debug:
         msg: |
