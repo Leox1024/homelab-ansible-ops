@@ -75,7 +75,7 @@
         --force-renewal
       when:
         - cert_stat.stat.exists
-        - force_renew | default(false)
+        - "force_renew | default(false)"
       register: certbot_forcerenew
 
     # 7) Final debug message to indicate the result
