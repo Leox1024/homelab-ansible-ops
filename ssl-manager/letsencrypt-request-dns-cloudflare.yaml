@@ -1,4 +1,3 @@
----
 - name: Ottenimento/Rinnovo certificato SSL per un dominio con DNS-Cloudflare
   hosts: all
   become: yes
