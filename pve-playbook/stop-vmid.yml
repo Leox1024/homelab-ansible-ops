@@ -26,7 +26,7 @@
 
     - name: Debug - VM found on this node
       debug:
-        msg: "VM with ID {{ vm_id }} found on node {{ inventory_hostname }}"
+        msg: "VM with ID {{ vm_id }} found on node {{ inventory_hostname }}, stopping..."
       when: qm_check.rc == 0
 
     - name: Debug - LXC found on this node
