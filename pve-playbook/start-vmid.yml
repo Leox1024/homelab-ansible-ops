@@ -5,7 +5,7 @@
   become_method: sudo
 
   vars:
-    vm_id: "102"
+    vm_id: "000"
 
   tasks:
     - name: Check if VM exists on node
