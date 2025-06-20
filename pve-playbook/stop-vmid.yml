@@ -31,7 +31,7 @@
 
     - name: Debug - LXC found on this node
       debug:
-        msg: "LXC container with ID {{ vm_id }} found on node {{ inventory_hostname }}"
+        msg: "LXC container with ID {{ vm_id }} found on node {{ inventory_hostname }}, stopping..."
       when: qm_check.rc != 0 and pct_check.rc == 0
 
     - name: Stop VM
