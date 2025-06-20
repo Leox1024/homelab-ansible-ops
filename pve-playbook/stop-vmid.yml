@@ -8,26 +8,29 @@
     vm_id: "000"
 
   tasks:
-    - name: Check if VM exists
+    - name: Check if VM exists on node
       command: qm status {{ vm_id }}
       register: qm_check
       ignore_errors: yes
 
-    - name: Check if LXC container exists
+    - name: Check if LXC container exists on node
       command: pct status {{ vm_id }}
       register: pct_check
       when: qm_check.rc != 0
       ignore_errors: yes
 
-    - name: Fail if VM or LXC not found
-      fail:
-        msg: "VM or LXC with ID {{ vm_id }} not found on this node."
-      when: qm_check.rc != 0 and (pct_check is not defined or pct_check.rc != 0)
+    - name: Set fact if VM or LXC exists on this node
+      set_fact:
+        vm_exists: "{{ (qm_check.rc == 0) or (pct_check.rc == 0) }}"
+
+    - name: Debug vm_exists
+      debug:
+        msg: "VM or LXC exists on this node"
 
     - name: Stop VM
       command: qm stop {{ vm_id }}
-      when: qm_check.rc == 0
+      when: vm_exists and (qm_check.rc == 0)
 
     - name: Stop LXC container
       command: pct stop {{ vm_id }}
-      when: qm_check.rc != 0 and pct_check.rc == 0
+      when: vm_exists and (qm_check.rc != 0 and pct_check.rc == 0)
