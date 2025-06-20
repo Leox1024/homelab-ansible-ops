@@ -1,5 +1,5 @@
 - name: Start VM or LXC on Proxmox based on vm_id
-  hosts: proxmox
+  hosts: all
   become: yes
   become_user: root
   become_method: sudo
