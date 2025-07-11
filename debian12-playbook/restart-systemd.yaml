@@ -1,7 +1,8 @@
----
 - name: Restart a system service
   hosts: all
-  become: true
+  become: yes
+  become_user: root
+  become_method: sudo
 
   vars:
     service_name: "sshd" 
