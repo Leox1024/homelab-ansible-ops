@@ -1,5 +1,13 @@
-#!/bin/bash
+---
+- name: Restart a system service
+  hosts: all
+  become: true
 
-SERVICE_NAME=""
+  vars:
+    service_name: "sshd" 
 
-sudo systemctl restart "$SERVICE_NAME"
+  tasks:
+    - name: "Restart the {{ service_name }} service"
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
