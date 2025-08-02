@@ -26,4 +26,5 @@
           - sudo
           - build-essential
           - make
+          - dnsutils
         state: present
