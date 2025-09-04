@@ -1,0 +1,34 @@
+name: create release on tag
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  zip-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: archive name
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          TAG="${GITHUB_REF_NAME}"
+          echo "ARCHIVE_NAME=${REPO_NAME}-${TAG}.zip" >> "$GITHUB_ENV"
+
+      - name: create zip (sources only)
+        run: zip -r "$ARCHIVE_NAME" . -x "./.git/*" "./.github/workflows/*"
+
+      - name: checksum
+        run: sha256sum "$ARCHIVE_NAME" > "$ARCHIVE_NAME}.sha256"
+
+      - name: create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.ARCHIVE_NAME }}.sha256
