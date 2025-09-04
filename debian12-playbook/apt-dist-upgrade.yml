@@ -3,6 +3,7 @@
   become: yes
   become_user: root
   become_method: sudo
+
   tasks:
     - name: Upgrade installed packages
       ansible.builtin.apt:

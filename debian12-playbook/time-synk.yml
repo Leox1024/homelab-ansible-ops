@@ -1,4 +1,4 @@
-- name: Update time and timezone on VMs and LXC containers
+- name: update time and timezone on VMs and LXC containers
   hosts: all
   become: yes
   become_user: root
@@ -13,21 +13,21 @@
     ntp_server: "pool.ntp.org"
 
   tasks:
-    - name: Tasks for non-LXC systems (VMs)
+    - name: tasks for non-LXC systems (VMs)
       block:
         - name: Set the timezone using tzdata
           ansible.builtin.timezone:
             name: "{{ new_timezone }}"
           # This task sets the system timezone using the tzdata module.
 
-        - name: Ensure ntpdate is installed (Debian/Ubuntu only)
+        - name: ensure ntpdate is installed (Debian/Ubuntu only)
           ansible.builtin.apt:
             name: ntpdate
             state: present
           when: ansible_os_family == "Debian"
           # This task installs the ntpdate package if it is not already present.
 
-        - name: Force update system time using ntpdate
+        - name: force update system time using ntpdate
           ansible.builtin.command: ntpdate -b -u {{ ntp_server }}
           register: ntp_update
           changed_when: true
@@ -35,13 +35,13 @@
           # The '-b' option forces a step adjustment when the time difference is large,
           # while '-u' uses an unprivileged port.
 
-        - name: Update the hardware clock (RTC) with the system time
+        - name: update the hardware clock (RTC) with the system time
           ansible.builtin.command: hwclock --systohc
           # This task writes the current system time to the hardware clock (RTC),
           # ensuring both clocks are in sync.
       when: ansible_virtualization_type != "lxc"
 
-    - name: Set timezone using tzdata in LXC containers
+    - name: set timezone using tzdata in LXC containers
       block:
         - name: Ensure tzdata is installed
           ansible.builtin.apt:
@@ -50,13 +50,13 @@
             update_cache: yes
           # Installs tzdata if it's not present.
 
-        - name: Set /etc/timezone
+        - name: set /etc/timezone
           ansible.builtin.copy:
             content: "{{ timezone_region }}\n"
             dest: /etc/timezone
           # Updates the /etc/timezone file with the desired timezone.
 
-        - name: Set /etc/localtime symlink
+        - name: set /etc/localtime symlink
           ansible.builtin.file:
             src: "/usr/share/zoneinfo/{{ timezone_region }}"
             dest: /etc/localtime
@@ -64,7 +64,7 @@
             force: yes
           # Creates (or forces) a symlink from /etc/localtime to the correct timezone file.
 
-        - name: Reconfigure tzdata
+        - name: reconfigure tzdata
           ansible.builtin.command: dpkg-reconfigure -f noninteractive tzdata
           # Reconfigures tzdata to apply the changes.
       when: ansible_virtualization_type == "lxc"

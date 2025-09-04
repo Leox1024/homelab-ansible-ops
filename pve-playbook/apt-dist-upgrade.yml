@@ -1,15 +1,16 @@
-- name: Dist-upgrade Proxmox host
+- name: dist-upgrade Proxmox host
   hosts: all
   become: yes
   become_user: root
   become_method: sudo
+  
   tasks:
-    - name: Update APT cache
+    - name: update APT cache
       apt:
         update_cache: yes
         cache_valid_time: 3600
 
-    - name: Perform full dist-upgrade
+    - name: perform full dist-upgrade
       apt:
         upgrade: dist
         autoremove: yes

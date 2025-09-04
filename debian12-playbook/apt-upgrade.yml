@@ -3,8 +3,9 @@
   become: yes
   become_user: root
   become_method: sudo
+
   tasks:
-    - name: Upgrade installed packages safely
+    - name: upgrade installed packages safely
       ansible.builtin.apt:
         upgrade: yes
         autoremove: yes

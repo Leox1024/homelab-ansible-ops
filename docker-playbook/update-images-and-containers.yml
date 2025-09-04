@@ -1,20 +1,20 @@
-- name: Pull and recreate all running Docker containers
+- name: pull and recreate all running Docker containers
   hosts: all
   become: yes
   become_user: root
   become_method: sudo
 
   tasks:
-    - name: Get running Docker container names
+    - name: get running Docker container names
       shell: docker ps --format '{{.Names}}'
       register: running_containers
       changed_when: false
 
-    - name: Pull latest images for all running containers
+    - name: pull latest images for all running containers
       shell: docker pull $(docker inspect --format='{{.Config.Image}}' {{ item }})
       loop: "{{ running_containers.stdout_lines }}"
 
-    - name: Recreate each container with updated image
+    - name: recreate each container with updated image
       shell: |
         docker stop {{ item }} && \
         docker rm {{ item }} && \

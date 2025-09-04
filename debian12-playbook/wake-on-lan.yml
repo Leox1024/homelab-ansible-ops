@@ -1,4 +1,4 @@
-- name: Wake-on-LAN playbook
+- name: wake-on-LAN playbook
   hosts: all
   become: yes
   become_user: root
@@ -10,7 +10,7 @@
     wol_port: 9
 
   tasks:
-    - name: Send magic Wake-on-LAN packet
+    - name: send magic Wake-on-LAN packet
       community.general.wakeonlan:
         mac: "{{ wol_macaddr }}"
         broadcast: "{{ wol_broadcast }}"

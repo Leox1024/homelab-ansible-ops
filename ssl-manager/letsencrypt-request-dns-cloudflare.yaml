@@ -3,7 +3,7 @@
 # Use this playbook for "barebone" renew certificate using certbot
 # This script will not probably not work with other plugin like nginx, ecc
 
-- name: Obtain/Renew SSL Certificate for a Domain Using Cloudflare DNS
+- name: obtain/Renew SSL Certificate for a Domain Using Cloudflare DNS
   hosts: all
   become: yes
   become_user: root
@@ -11,14 +11,14 @@
 
   vars:
     # Main variables (modify only here)
-    domain_name: "domain.com"           # ❗ Replace with your domain
-    email: "admin@domain.com"           # ❗ Replace with your email
-    cloudflare_token: "abcdefg1234567"  # ❗ Replace with your actual token
+    domain_name: "domain.com"           # replace with your domain
+    email: "admin@domain.com"           # replace with your email
+    cloudflare_token: "abcdefg1234567"  # replace with your actual token
     cf_credentials_path: "/etc/letsencrypt/secrets/cloudflare-{{ domain_name }}.ini"
     expiration_threshold: 41            # days before expiration to force renewal
 
   tasks:
-    - name: Install Certbot and DNS-Cloudflare plugin
+    - name: install Certbot and DNS-Cloudflare plugin
       apt:
         name:
           - openssl
@@ -27,7 +27,7 @@
         state: present
         update_cache: yes
 
-    - name: Create directory for Cloudflare credentials
+    - name: create directory for Cloudflare credentials
       file:
         path: "/etc/letsencrypt/secrets"
         state: directory
@@ -35,7 +35,7 @@
         group: root
         mode: "0700"
 
-    - name: Write Cloudflare credentials file for {{ domain_name }}
+    - name: write Cloudflare credentials file for {{ domain_name }}
       copy:
         dest: "{{ cf_credentials_path }}"
         content: |
@@ -44,13 +44,13 @@
         group: root
         mode: "0600"
 
-    - name: Check existence of certificate for {{ domain_name }}
+    - name: check existence of certificate for {{ domain_name }}
       stat:
         path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
       register: cert_stat
 
     # If certificate does not exist -> perform the initial issuance
-    - name: Initial issuance of SSL certificate for {{ domain_name }}
+    - name: initial issuance of SSL certificate for {{ domain_name }}
       command: >
         certbot certonly
         --dns-cloudflare
@@ -65,24 +65,24 @@
       register: certbot_initial
 
     # If certificate exists -> get expiration date
-    - name: Retrieve certificate expiration date
+    - name: retrieve certificate expiration date
       shell: >
         openssl x509 -in /etc/letsencrypt/live/{{ domain_name }}/cert.pem -noout -enddate
       register: cert_enddate_raw
       when: cert_stat.stat.exists
       changed_when: false
 
-    - name: Calculate days until certificate expires
+    - name: calculate days until certificate expires
       when: cert_stat.stat.exists
       set_fact:
         cert_days_left: "{{ ((cert_enddate_raw.stdout | regex_replace('^notAfter=(.*)$','\\1')) | to_datetime('%b %d %H:%M:%S %Y %Z') - lookup('pipe','date +\"%b %d %H:%M:%S %Y %Z\"') | to_datetime('%b %d %H:%M:%S %Y %Z')).total_seconds() // 86400 | int }}"
 
-    - name: Determine if forced renewal is needed
+    - name: determine if forced renewal is needed
       when: cert_stat.stat.exists
       set_fact:
         force_renew: "{{ (cert_days_left | int) <= expiration_threshold }}"
 
-    - name: Force renewal of certificate if expiring within threshold
+    - name: force renewal of certificate if expiring within threshold
       command: >
         certbot certonly
         --dns-cloudflare
@@ -102,14 +102,14 @@
       debug:
         msg: |
           {% if certbot_initial is defined and (certbot_initial.rc | default(1)) == 0 %}
-            ✅ Initial certificate for {{ domain_name }} created successfully.
+            Initial certificate for {{ domain_name }} created successfully.
             You can find it in /etc/letsencrypt/live/{{ domain_name }}/
           {% elif certbot_forcerenew is defined and (certbot_forcerenew.rc | default(1)) == 0 %}
-            🔄 Certificate for {{ domain_name }} was renewed (forced) successfully.
+            Certificate for {{ domain_name }} was renewed (forced) successfully.
             You can find it in /etc/letsencrypt/live/{{ domain_name }}/
           {% elif cert_stat.stat.exists %}
-            ℹ️ Certificate for {{ domain_name }} already exists and is valid ({{ cert_days_left }} days until expiration).
+            Certificate for {{ domain_name }} already exists and is valid ({{ cert_days_left }} days until expiration).
             No renewal needed at this time.
           {% else %}
-            ❌ Unexpected state. Check logs for details.
+            Unexpected state. Check logs for details.
           {% endif %}

@@ -1,4 +1,4 @@
-- name: Smart file/dir deleter
+- name: smart file/dir deleter
   hosts: all
   become: yes
   become_user: root
@@ -18,12 +18,12 @@
 
 #-----------------------------------------------------#
   
-    - name: Stat the path
+    - name: stat the path
       stat:
         path: "{{ path_var }}"
       register: path_stat
 
-    - name: Fail on dangerous paths (/, /etc, /boot, ecc)
+    - name: fail on dangerous paths (/, /etc, /boot, ecc)
       fail:
         msg: "Refusing to operate on critical path: {{ path_var }}"
       when:
@@ -37,12 +37,12 @@
 #-----------------------------------------------------#
 
     # File check and deletion
-    - name: Path is a file
+    - name: path is a file
       debug:
         msg: "{{ path_var }} is a file: deleting..."
       when: path_stat.stat.isfile | default(false)
 
-    - name: Delete file
+    - name: delete file
       file:
         path: "{{ path_var }}"
         state: absent
@@ -55,13 +55,13 @@
 #-----------------------------------------------------#
 
     # Directory check and deletion
-    - name: Path is a directory
+    - name: path is a directory
       debug:
         msg: "{{ path_var }} is a directory: deleting..."
       when: path_stat.stat.isdir | default(false)
     
     # Delete inside dir /path/to/delete/*
-    - name: Handle wildcard deletion - delete only dir contents
+    - name: handle wildcard deletion - delete only dir contents
       find:
         paths: "{{ path_var | regex_replace('/\\*$', '') }}"
         file_type: any
@@ -69,7 +69,7 @@
       when: path_var.endswith('*')
       
     # Delete inside dir /path/to/delete/*
-    - name: Delete files matched by wildcard
+    - name: delete files matched by wildcard
       file:
         path: "{{ item.path }}"
         state: absent
@@ -79,12 +79,12 @@
 #-----------------------------------------------------#
 
     # Classic delete of entire dir /path/to/delete
-    - name: Delete the entire directory
+    - name: delete the entire directory
       file:
         path: "{{ path_var }}"
         state: absent
       when: path_stat.stat.exists | default(false) and path_stat.stat.isdir | default(false)
 
-    - name: End play if dir was deleted
+    - name: end play if dir was deleted
       meta: end_play
       when: path_stat.stat.exists | default(false) and path_stat.stat.isdir | default(false)

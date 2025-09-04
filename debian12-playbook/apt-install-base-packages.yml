@@ -1,16 +1,16 @@
-- name: Install essential base packages
+- name: install "essential" base packages
   hosts: all
   become: yes
   become_user: root
   become_method: sudo
 
   tasks:
-    - name: Ensure APT cache is updated
+    - name: make sure APT cache is updated
       apt:
         update_cache: yes
         cache_valid_time: 3600
 
-    - name: Install essential packages
+    - name: install essential packages
       apt:
         name:
           - git

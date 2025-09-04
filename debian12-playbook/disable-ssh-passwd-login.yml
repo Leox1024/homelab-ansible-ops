@@ -1,10 +1,11 @@
-- name: Disable SSH password login, allow only public key auth
+- name: disable SSH password login, allow only public key auth
   hosts: all
   become: yes
   become_user: root
   become_method: sudo
+  
   tasks:
-    - name: Ensure pubkey authentication is enabled
+    - name: ensure pubkey authentication is enabled
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?PubkeyAuthentication'
@@ -12,7 +13,7 @@
         state: present
         backup: yes
 
-    - name: Disable password authentication
+    - name: disable password authentication
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?PasswordAuthentication'
@@ -20,7 +21,7 @@
         state: present
         backup: yes
 
-    - name: Disable challenge response authentication
+    - name: disable challenge response authentication
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?ChallengeResponseAuthentication'
@@ -28,13 +29,13 @@
         state: present
         backup: yes
     
-    - name: Restart SSH service (unified)
+    - name: restart SSH service (unified)
       service:
         name: ssh
         state: restarted
       ignore_errors: yes
     
-    - name: Restart SSHD fallback (for systems using 'sshd')
+    - name: restart SSHD fallback (for systems using 'sshd')
       service:
         name: sshd
         state: restarted

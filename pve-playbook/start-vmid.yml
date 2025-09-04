@@ -1,4 +1,4 @@
-- name: Start VM or LXC on Proxmox based on vm_id
+- name: start VM or LXC on Proxmox based on vm_id
   hosts: all
   become: yes
   become_user: root
@@ -8,36 +8,36 @@
     vm_id: "000"
 
   tasks:
-    - name: Check if VM exists
+    - name: check if VM exists
       command: qm status {{ vm_id }}
       register: qm_check
       ignore_errors: yes
 
-    - name: Check if LXC container exists
+    - name: check if LXC container exists
       command: pct status {{ vm_id }}
       register: pct_check
       when: qm_check.rc != 0
       ignore_errors: yes
 
-    - name: Fail if VM or LXC not found
+    - name: fail if VM or LXC not found
       fail:
         msg: "VM or LXC with ID {{ vm_id }} not found on this node."
       when: qm_check.rc != 0 and (pct_check is not defined or pct_check.rc != 0)
 
-    - name: Debug - VM found on this node
+    - name: debug - VM found on this node
       debug:
         msg: "VM with ID {{ vm_id }} found on node {{ inventory_hostname }}, starting..."
       when: qm_check.rc == 0
 
-    - name: Debug - LXC found on this node
+    - name: debug - LXC found on this node
       debug:
         msg: "LXC container with ID {{ vm_id }} found on node {{ inventory_hostname }}, starting..."
       when: qm_check.rc != 0 and pct_check.rc == 0
 
-    - name: Start VM
+    - name: start VM
       command: qm start {{ vm_id }}
       when: qm_check.rc == 0
 
-    - name: Start LXC container
+    - name: start LXC container
       command: pct start {{ vm_id }}
       when: qm_check.rc != 0 and pct_check.rc == 0

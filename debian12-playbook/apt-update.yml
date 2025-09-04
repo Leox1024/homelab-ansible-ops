@@ -3,7 +3,8 @@
   become: yes
   become_user: root
   become_method: sudo
+
   tasks:
-    - name: Update apt cache
+    - name: update apt cache
       ansible.builtin.apt:
         update_cache: yes
