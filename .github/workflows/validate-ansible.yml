@@ -1,5 +1,4 @@
-name: Validate Ansible YML files for required privilege escalation
-
+name: Check Ansible YML playbook (need root in most cases to run properly)
 on:
   push:
     paths:
@@ -14,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: checkout repository
         uses: actions/checkout@v3
 
-      - name: Find Ansible playbooks and check for privilege parameters
+      - name: find Ansible playbooks and check for privilege parameters
         run: |
           missing_files=0
           for file in $(find . -name "*.yml" -o -name "*.yaml"); do
