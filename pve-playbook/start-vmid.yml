@@ -1,4 +1,4 @@
-- name: start VM or LXC on Proxmox based on vm_id
+- name: start VM or LXC on Proxmox based on vm_id (if you are working in a cluster env let this script run on every node)
   hosts: all
   become: yes
   become_user: root
