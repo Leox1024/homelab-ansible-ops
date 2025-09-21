@@ -1,8 +1,6 @@
 - name: wake-on-LAN playbook
-  hosts: all
-  become: yes
-  become_user: root
-  become_method: sudo
+  hosts: localhost
+  gather_facts: false
 
   vars:
     wol_macaddr: "00:11:22:33:44:55"
