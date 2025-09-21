@@ -3,6 +3,8 @@
 This repo contains Ansible playbooks for different **services/environments**, in order to automate and maintain vms/lxc, services and applications within a server-infrastructure/homelab.
 This repo works thanks to ansible, I prefered to integrate it with [Semaphore](https://github.com/ansible-semaphore/semaphore) in order to have a GUI.
 
+<img width="1324" height="727" alt="image" src="https://github.com/user-attachments/assets/4b2c4996-834b-4200-8bb2-92a2f8c913c4" />
+
 ## folder structure
 ```
 ├── debian12-playbook/              # playbooks for base Debian 12 VM management
