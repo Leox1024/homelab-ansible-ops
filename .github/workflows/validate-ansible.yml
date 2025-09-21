@@ -1,4 +1,4 @@
-name: Check Ansible YML playbook (need root in most cases to run properly)
+name: Check Ansible YML playbook (need root in most cases to run)
 on:
   push:
     paths:
