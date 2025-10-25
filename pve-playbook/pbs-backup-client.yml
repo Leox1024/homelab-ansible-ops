@@ -1,5 +1,5 @@
-// I suggest using this playbook for backup your proxmox node server (barebone).
-// Please run the first time command manually on your proxmox machine in order to save fingerprint/password of PBS
+# I suggest using this playbook for backup your proxmox node server (barebone).
+# Please run the first time command manually on your proxmox machine in order to save fingerprint/password of PBS
 
 - name: Run PBS file-level backup
   hosts: all
