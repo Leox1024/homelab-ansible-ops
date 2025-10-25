@@ -1,22 +1,33 @@
-# I suggest using this playbook for backup your proxmox node server (barebone).
-# Please run the first time command manually on your proxmox machine in order to save fingerprint/password of PBS
-
-- name: Run PBS file-level backup
+- name: Run PBS file-level backup (ENV-based)
   hosts: all
   become: yes
-  become_user: root
-  become_method: sudo
+  gather_facts: no
 
   vars:
-    PBS: "10.100.0.75"
-    datastore: "hosts-backup"
+    pbs_server: "10.100.0.75"
+    pbs_datastore: "hosts-backup"
+    pbs_username: "root@pam!hosts-backup"
+    pbs_secret: "{{ vault_pbs_secret }}"
+    pbs_fingerprint: "99:44:7f:91:00:bd:1a:4b:35:25:b9:d9:6a:a4:71:cc:71:4d:8a:08:49:28:d3:25:df:9a:f5:36:ec:6e:71:eb"
     backup_dir: "/etc"
 
   tasks:
-    - name: Run proxmox-backup-client
-      ansible.builtin.command:
-        cmd: >-
-          proxmox-backup-client backup
-          {{ (backup_dir | basename) }}.pxar:{{ backup_dir }}
-          --repository {{ PBS }}:{{ datastore }}
-          --include-dev /boot/efi
+    - name: register fingerprint TLS localy
+      lineinfile:
+        path: /root/.config/proxmox-backup/fingerprints
+        create: yes
+        owner: root
+        group: root
+        mode: '0600'
+        line: "{{ pbs_server }} {{ pbs_fingerprint }}"
+        regexp: "^{{ pbs_server }} "
+
+    - name: start backup
+      ansible.builtin.command: >
+        proxmox-backup-client backup
+        {{ (backup_dir | basename) }}.pxar:{{ backup_dir }}
+        --include-dev /boot/efi
+      environment:
+        PBS_REPOSITORY: "{{ pbs_username }}@{{ pbs_server }}:{{ pbs_datastore }}"
+        PBS_PASSWORD: "{{ pbs_secret }}"
+        PBS_FINGERPRINT: "{{ pbs_fingerprint }}"
