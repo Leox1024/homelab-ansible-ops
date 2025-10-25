@@ -1,0 +1,22 @@
+// I suggest using this playbook for backup your proxmox node server (barebone).
+// Please run the first time command manually on your proxmox machine in order to save fingerprint/password of PBS
+
+- name: Run PBS file-level backup
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    PBS: "10.100.0.75"
+    datastore: "hosts-backup"
+    backup_dir: "/etc"
+
+  tasks:
+    - name: Run proxmox-backup-client
+      ansible.builtin.command:
+        cmd: >-
+          proxmox-backup-client backup
+          {{ (backup_dir | basename) }}.pxar:{{ backup_dir }}
+          --repository {{ PBS }}:{{ datastore }}
+          --include-dev /boot/efi
