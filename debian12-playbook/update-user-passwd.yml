@@ -1,0 +1,11 @@
+- name: update user password
+  hosts: all
+  become: yes
+  vars:
+    user: "user"
+    new_pwd: "newpassword"
+
+  tasks:
+    - name: update user password
+      shell: echo "{{ new_pwd }}" | passwd --stdin {{ user }}
+      no_log: true
