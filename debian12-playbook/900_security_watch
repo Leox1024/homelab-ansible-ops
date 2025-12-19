@@ -27,7 +27,7 @@ CRON_PATHS = [
 ]
 
 IP_RE = re.compile(r"\bfrom\s+([0-9a-fA-F\.:]+)\b")
-FAIL_RE = re.compile(r"(Failed password|Invalid user|authentication failure)", re.IGNORE)
+FAIL_RE = re.compile(r"(Failed password|Invalid user|authentication failure)", re.IGNORECASE)
 
 def load_state():
     try:
@@ -130,11 +130,11 @@ def check_integrity(state, key, label, compute_fn):
 
     if baseline is None:
         state["integrity"][key] = current
-        local_line(1, label, "Baseline created (first run). Verify and re-run if expecte)
+        local_line(1, label, "Baseline created (first run). Verify and re-run if expected.")
         return
 
     if baseline != current:
-        local_line(2, label, "Changed since baseline. Investigate and update baseline if)
+        local_line(2, label, "Changed since baseline. Investigate and update baseline if legitimate.")
     else:
         local_line(0, label, "OK")
 
@@ -170,16 +170,16 @@ def main():
 
         if failures >= SSH_CRIT:
             local_line(2, "SEC_SSH_AUTH",
-                       f"SSH auth failures: {failures} since last check, uniq IPs={uniq_,
-                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_i)
+                       f"SSH auth failures: {failures} since last check, uniq IPs={uniq_ips}, top={top_ip}",
+                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_ips}")
         elif failures >= SSH_WARN:
             local_line(1, "SEC_SSH_AUTH",
-                       f"SSH auth failures: {failures} since last check, uniq IPs={uniq_,
-                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_i)
+                       f"SSH auth failures: {failures} since last check, uniq IPs={uniq_ips}, top={top_ip}",
+                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_ips}")
         else:
             local_line(0, "SEC_SSH_AUTH",
                        f"OK (failures={failures} since last check)",
-                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_i)
+                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_ips}")
 
     # 2) FSTAB integrity
     def fstab_hash():
