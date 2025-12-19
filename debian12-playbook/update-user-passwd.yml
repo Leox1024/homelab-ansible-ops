@@ -11,6 +11,6 @@
   tasks:
     - name: Set password hash for user
       ansible.builtin.user:
-        name: "{{ target_user }}"
-        password: "{{ target_password_hash }}"
+        name: "{{ user }}"
+        password: "{{ password_hash }}"
         update_password: always
