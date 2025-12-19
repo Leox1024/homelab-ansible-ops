@@ -3,8 +3,16 @@
   become: yes
   vars:
     user: "user"
-    new_pwd: "newpassword"
+    new_pwd: "password"
 
   tasks:
+    - name: hash password
+      set_fact:
+        pwd_hash: "{{ new_pwd | password_hash('sha512') }}"
+      no_log: true
+
     - name: update user password
-      shell: echo "{{ new_pwd }}" | passwd --stdin {{ user }}
+      ansible.builtin.user:
+        name: "{{ user }}"
+        password: "{{ pwd_hash }}"
+        update_password: always
