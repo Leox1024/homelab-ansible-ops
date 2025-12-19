@@ -1,17 +1,16 @@
-- name: update user password
+- name: updaet local user password (hash already provided)
   hosts: all
   become: yes
+  become_user: root
+  become_method: sudo
+  
   vars:
     user: "user"
-    new_pwd: "password"
+    password_hash: "$6$.Afw12...." # to generate the password run "openssl passwd -6" on your terminal
 
   tasks:
-    - name: hash password
-      set_fact:
-        pwd_hash: "{{ new_pwd | password_hash('sha512') }}"
-
-    - name: update user password
+    - name: Set password hash for user
       ansible.builtin.user:
-        name: "{{ user }}"
-        password: "{{ pwd_hash }}"
+        name: "{{ target_user }}"
+        password: "{{ target_password_hash }}"
         update_password: always
