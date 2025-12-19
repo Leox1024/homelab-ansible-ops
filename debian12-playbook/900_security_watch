@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+import os
+import re
+import json
+import time
+import hashlib
+import subprocess
+from pathlib import Path
+
+STATE_DIR = Path("/var/lib/check_mk_agent/security_watch")
+STATE_FILE = STATE_DIR / "state.json"
+
+# Default soglie (per intervallo tra due run del plugin)
+SSH_WARN = int(os.getenv("CMK_SSH_FAIL_WARN", "10"))
+SSH_CRIT = int(os.getenv("CMK_SSH_FAIL_CRIT", "20"))
+
+# Cosa monitorare come integrità
+FSTAB_PATH = Path("/etc/fstab")
+CRON_PATHS = [
+    Path("/etc/crontab"),
+    Path("/etc/cron.d"),
+    Path("/etc/cron.daily"),
+    Path("/etc/cron.hourly"),
+    Path("/etc/cron.weekly"),
+    Path("/etc/cron.monthly"),
+    Path("/var/spool/cron/crontabs"),
+]
+
+IP_RE = re.compile(r"\bfrom\s+([0-9a-fA-F\.:]+)\b")
+FAIL_RE = re.compile(r"(Failed password|Invalid user|authentication failure)", re.IGNORE)
+
+def load_state():
+    try:
+        with STATE_FILE.open("r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+def save_state(state):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        json.dump(state, f, indent=2, sort_keys=True)
+    os.replace(tmp, STATE_FILE)
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def sha256_tree(paths):
+    """
+    Hash deterministico della lista file (path + contenuto).
+    Directory: include tutti i file regolari ricorsivamente.
+    """
+    files = []
+    for p in paths:
+        if not p.exists():
+            continue
+        if p.is_file():
+            files.append(p)
+        elif p.is_dir():
+            for fp in sorted(p.rglob("*")):
+                try:
+                    if fp.is_file():
+                        files.append(fp)
+                except OSError:
+                    continue
+
+    h = hashlib.sha256()
+    for fp in sorted(set(files), key=lambda x: str(x)):
+        try:
+            h.update(str(fp).encode())
+            h.update(b"\0")
+            h.update(sha256_file(fp).encode())
+            h.update(b"\n")
+        except Exception:
+            # se un file è illeggibile, lo includiamo come marker
+            h.update(str(fp).encode() + b"\0<unreadable>\n")
+    return h.hexdigest(), len(files)
+
+def run_journalctl_after_cursor(unit: str, cursor: str | None):
+    cmd = ["journalctl", "--no-pager", "--output=json", "--show-cursor"]
+    if unit:
+        cmd += ["-u", unit]
+    if cursor:
+        cmd += ["--after-cursor", cursor]
+    # Limite per safety: se c'è una tempesta log non bloccare l'agent
+    cmd += ["-n", "5000"]
+
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if p.returncode != 0:
+        return None, None, f"journalctl error: {p.stderr.strip()[:200]}"
+
+    new_cursor = None
+    events = []
+    for line in p.stdout.splitlines():
+        if line.startswith("-- cursor: "):
+            new_cursor = line.replace("-- cursor: ", "").strip()
+            continue
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            msg = obj.get("MESSAGE", "")
+            if msg:
+                events.append(msg)
+        except json.JSONDecodeError:
+            continue
+    return events, new_cursor, None
+
+def local_line(state, service, msg, perf=""):
+    # state: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN
+    if perf:
+        print(f"{state} {service} {perf} {msg}")
+    else:
+        print(f"{state} {service} - {msg}")
+
+def check_integrity(state, key, label, compute_fn):
+    baseline = state.get("integrity", {}).get(key)
+    current = compute_fn()
+
+    if "integrity" not in state:
+        state["integrity"] = {}
+
+    if baseline is None:
+        state["integrity"][key] = current
+        local_line(1, label, "Baseline created (first run). Verify and re-run if expecte)
+        return
+
+    if baseline != current:
+        local_line(2, label, "Changed since baseline. Investigate and update baseline if)
+    else:
+        local_line(0, label, "OK")
+
+def main():
+    st = load_state()
+    now = int(time.time())
+
+    # 1) SSH brute force (incrementale)
+    cursor = st.get("ssh", {}).get("cursor")
+    events, new_cursor, err = run_journalctl_after_cursor("ssh", cursor)
+
+    if "ssh" not in st:
+        st["ssh"] = {}
+
+    if err is not None:
+        local_line(3, "SEC_SSH_AUTH", f"Cannot read journal: {err}")
+    else:
+        failures = 0
+        ips = {}
+        for msg in events:
+            if FAIL_RE.search(msg):
+                failures += 1
+                m = IP_RE.search(msg)
+                if m:
+                    ip = m.group(1)
+                    ips[ip] = ips.get(ip, 0) + 1
+
+        if new_cursor:
+            st["ssh"]["cursor"] = new_cursor
+
+        uniq_ips = len(ips)
+        top_ip = max(ips.items(), key=lambda kv: kv[1])[0] if ips else "-"
+
+        if failures >= SSH_CRIT:
+            local_line(2, "SEC_SSH_AUTH",
+                       f"SSH auth failures: {failures} since last check, uniq IPs={uniq_,
+                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_i)
+        elif failures >= SSH_WARN:
+            local_line(1, "SEC_SSH_AUTH",
+                       f"SSH auth failures: {failures} since last check, uniq IPs={uniq_,
+                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_i)
+        else:
+            local_line(0, "SEC_SSH_AUTH",
+                       f"OK (failures={failures} since last check)",
+                       perf=f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_i)
+
+    # 2) FSTAB integrity
+    def fstab_hash():
+        if not FSTAB_PATH.exists():
+            return "missing"
+        return sha256_file(FSTAB_PATH)
+
+    check_integrity(st, "fstab_sha256", "SEC_FSTAB", fstab_hash)
+
+    # 3) CRON integrity
+    def cron_hash():
+        digest, nfiles = sha256_tree(CRON_PATHS)
+        return f"{digest}:{nfiles}"
+
+    check_integrity(st, "cron_tree", "SEC_CRON", cron_hash)
+
+    st["meta"] = {"last_run": now}
+    save_state(st)
+
+if __name__ == "__main__":
+    main()
