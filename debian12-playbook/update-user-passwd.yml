@@ -9,7 +9,6 @@
     - name: hash password
       set_fact:
         pwd_hash: "{{ new_pwd | password_hash('sha512') }}"
-      no_log: true
 
     - name: update user password
       ansible.builtin.user:
