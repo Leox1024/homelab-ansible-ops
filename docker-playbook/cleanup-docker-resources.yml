@@ -1,4 +1,4 @@
-- name: cleanup unused Docker resources
+- name: cleanup unused docker resources (volumes, images, networks)
   hosts: all
   become: yes
   become_user: root
@@ -6,6 +6,6 @@
 
   tasks:
     - name: prune unused Docker data
-      shell: docker system prune -f
+      shell: docker system prune -a --volumes
       args:
         warn: false
