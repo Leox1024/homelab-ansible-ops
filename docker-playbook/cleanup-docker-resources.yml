@@ -6,4 +6,4 @@
 
   tasks:
     - name: prune unused Docker data
-      shell: docker system prune -a --volumes
+      shell: docker system prune -a --volumes -f
