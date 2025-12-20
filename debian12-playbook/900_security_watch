@@ -437,15 +437,20 @@ def check_setuid(st: dict) -> None:
 # ----------------------------- SEC_LISTEN -----------------------------
 # Backdoor/network signal: delta on TCP listening sockets; new listeners trigger WARN by default.
 
-def parse_local_port(local_addr: str) -> int | None:
-    # local_addr examples: "0.0.0.0:22", "[::]:80", "*:9100"
+def parse_local_port_from_ss_line(ss_line):
+    # ss -lntp columns: State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+    # we want the Local Address:Port column (index 3)
+    parts = ss_line.split()
+    if len(parts) < 4:
+        return None
+    local = parts[3]
+    # local examples: 0.0.0.0:22, [::]:80, *:9100
     try:
-        if local_addr.startswith("["):
-            # [::]:80
-            _, port = local_addr.rsplit("]:", 1)
+        if local.startswith("["):
+            _, port = local.rsplit("]:", 1)
             return int(port)
-        if ":" in local_addr:
-            _, port = local_addr.rsplit(":", 1)
+        if ":" in local:
+            _, port = local.rsplit(":", 1)
             return int(port)
     except Exception:
         return None
@@ -470,6 +475,13 @@ def check_listen(st: dict) -> None:
     current = collect_tcp_listeners()
     prev = st.get("tcp_listeners")
 
+    zero_port = False
+    for line in current:
+        port = parse_local_port_from_ss_line(line)
+        if port == 0:
+            zero_port = True
+            break
+
     if prev is None:
         st["tcp_listeners"] = current
         local_line(1, "SEC_LISTEN", "Baseline created (TCP listeners)")
@@ -479,6 +491,12 @@ def check_listen(st: dict) -> None:
     st["tcp_listeners"] = current
 
     perf = f"new={len(new)};;;"
+
+    # IMPORTANT: emit at most one line for this service
+    if zero_port:
+        local_line(2, "SEC_LISTEN", "TCP listener on port 0 detected (abnormal)", perf=perf)
+        return
+
     if new:
         local_line(1, "SEC_LISTEN", f"New TCP listeners: {len(new)} (example: {new[0][:160]})", perf=perf)
     else:
