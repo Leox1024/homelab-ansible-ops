@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# checkmk local security checks (stateful baseline/delta where useful)
+# Checkmk local security checks (simple, stateful baselines where useful)
 
 import os
 import re
@@ -7,132 +7,103 @@ import json
 import time
 import hashlib
 import subprocess
-from pathlib import path
+from pathlib import Path
 
-# ----------------------------- config -----------------------------
+# ----------------------------- global config -----------------------------
 
-# state-config
-state_dir = path("/var/lib/check_mk_agent/security_watch")
-state_file = state_dir / "state.json"
+STATE_DIR = Path("/var/lib/check_mk_agent/security_watch")
+STATE_FILE = STATE_DIR / "state.json"
 
-# sec_ssh_auth-config
-sec_ssh_auth_isactive = 1
-ssh_warn = 10
-ssh_crit = 20
+# Env knobs (uppercase, consistent)
+SSH_WARN = int(os.getenv("CMK_SSH_FAIL_WARN", "10"))
+SSH_CRIT = int(os.getenv("CMK_SSH_FAIL_CRIT", "20"))
 
-# sec_proc-config
-sec_proc_isactive = 1
-susp_proc_warn = int(os.getenv("cmk_susp_proc_warn", "1"))
-susp_proc_crit = int(os.getenv("cmk_susp_proc_crit", "3"))
+SUSP_PROC_WARN = int(os.getenv("CMK_SUSP_PROC_WARN", "1"))
+SUSP_PROC_CRIT = int(os.getenv("CMK_SUSP_PROC_CRIT", "3"))
 
-# suspicious process heuristics
-susp_path_re = re.compile(r"(^|\s)(/tmp/|/dev/shm/|/var/tmp/)", re.IGNORECASE)
-susp_name_re = re.compile(r"\b(kworkerd|kworker\d+|systemd--|dbusd--)\b", re.IGNORECASE)
-deleted_re = re.compile(r"\(deleted\)", re.IGNORECASE)
+HUMAN_UID_MIN = int(os.getenv("CMK_HUMAN_UID_MIN", "1000"))
 
-# non-suspicious process allowlist (skip if matched)
-allow_proc_name_re = re.compile(
-    r"\b(docker|dockerd|containerd|containerd-shim|kubelet|kube-proxy|kubectl|k3s|minikube|"
-    r"crio|podman|runc|pause|semaphore|ansible|prometheus|node_exporter|grafana|telegraf|"
-    r"checkmk|cmk-agent|sshd|systemd|journald|rsyslogd)\b",
+FSTAB_PATH = Path("/etc/fstab")
+PASSWD_PATH = Path("/etc/passwd")
+CRON_PATHS = [
+    Path("/etc/crontab"),
+    Path("/etc/cron.d"),
+    Path("/etc/cron.daily"),
+    Path("/etc/cron.hourly"),
+    Path("/etc/cron.weekly"),
+    Path("/etc/cron.monthly"),
+    Path("/var/spool/cron/crontabs"),
+]
+AUTH_KEY_PATHS = [
+    Path("/root/.ssh/authorized_keys"),
+    Path("/home"),  # base dir: /home/*/.ssh/authorized_keys
+]
+
+# SSH log parsing
+IP_RE = re.compile(r"\bfrom\s+([0-9a-fA-F\.:]+)\b")
+FAIL_RE = re.compile(r"(Failed password|Invalid user|authentication failure)", re.IGNORECASE)
+
+# Process heuristics (keep cheap; score using /proc/<pid>/exe when possible)
+SUSP_ARGS_PATH_RE = re.compile(r"(^|\s)(/tmp/|/dev/shm/|/var/tmp/)", re.IGNORECASE)
+SUSP_NAME_RE = re.compile(r"\b(kworkerd|kworker\d+|systemd--|dbusd--)\b", re.IGNORECASE)
+DELETED_RE = re.compile(r"\(deleted\)", re.IGNORECASE)
+
+ALLOW_PROC_ARGS_RE = re.compile(
+    r"\b(docker|dockerd|containerd|containerd-shim|kubelet|kube-proxy|k3s|runc|pause|"
+    r"prometheus|node_exporter|grafana|telegraf|checkmk|cmk-agent|systemd|journald|rsyslogd)\b",
     re.IGNORECASE,
 )
+CGROUP_CONTAINER_RE = re.compile(r"(docker-|kubepods|containerd|crio|libpod)", re.IGNORECASE)
 
-# container/runtime context markers in /proc/<pid>/cgroup
-cgroup_container_re = re.compile(r"(docker-|kubepods|containerd|crio|libpod)", re.IGNORECASE)
-
-# optional: known runtime binaries (extra filter)
-allow_runtime_args_re = re.compile(
-    r"(^|\s)(runc|containerd|containerd-shim|pause)(\s|$)", re.IGNORECASE
-)
-
-# sec_fstab-config
-sec_fstab_isactive = 1
-fstab_path = path("/etc/fstab")
-
-# sec_cron-config
-sec_cron_isactive = 1
-cron_paths = [
-    path("/etc/crontab"),
-    path("/etc/cron.d"),
-    path("/etc/cron.daily"),
-    path("/etc/cron.hourly"),
-    path("/etc/cron.weekly"),
-    path("/etc/cron.monthly"),
-    path("/var/spool/cron/crontabs"),
-]
-
-# sec_systemd_persist-config
-sec_systemd_persist_isactive = 1
-
-# sec_ssh_keys-config
-sec_ssh_keys_isactive = 1
-ssh_authorized_key_paths = [
-    path("/root/.ssh/authorized_keys"),
-    path("/home"),  # used as a base to scan /home/*/.ssh/authorized_keys
-]
-
-# sec_setuid-config
-sec_setuid_isactive = 1
-
-# sec_listen-config
-sec_listen_isactive = 1
-tcp_high_port_threshold = 40000
-tcp_high_port_warn = 1
-tcp_high_port_crit = 3
-
-# sec_users-config
-sec_users_isactive = 1
-
-# sec_auth_files-config
-sec_auth_files_isactive = 1
-passwd_path = path("/etc/passwd")
-shadow_path = path("/etc/shadow")
-group_path = path("/etc/group")
-
-# regex for ssh auth parsing
-ip_re = re.compile(r"\bfrom\s+([0-9a-fA-F\.:]+)\b")
-fail_re = re.compile(r"(failed password|invalid user|authentication failure)", re.IGNORECASE)
+TEMP_EXE_PREFIXES = ("/tmp/", "/var/tmp/", "/dev/shm/")
 
 # ----------------------------- helpers -----------------------------
 
-def load_state():
+def load_state() -> dict:
     try:
-        with state_file.open("r") as f:
+        with STATE_FILE.open("r") as f:
             return json.load(f)
+    except FileNotFoundError:
+        return {}
     except Exception:
+        # Backup corrupted state to avoid silent baseline resets looping forever
+        try:
+            if STATE_FILE.exists():
+                bad = STATE_FILE.with_suffix(f".bad.{int(time.time())}")
+                STATE_FILE.replace(bad)
+        except Exception:
+            pass
         return {}
 
-def save_state(st):
-    state_dir.mkdir(parents=True, exist_ok=True)
-    tmp = state_file.with_suffix(".tmp")
+def save_state(st: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_FILE.with_suffix(".tmp")
     with tmp.open("w") as f:
         json.dump(st, f, indent=2, sort_keys=True)
-    os.replace(tmp, state_file)
+    os.replace(tmp, STATE_FILE)
 
-def local_line(code, svc, msg, perf=""):
+def local_line(code: int, svc: str, msg: str, perf: str = "") -> None:
+    # Checkmk local format: "<state> <service> <perfdata> <text>" or "<state> <service> - <text>"
     if perf:
-        print(str(code) + " " + svc + " " + perf + " " + msg)
+        print(f"{code} {svc} {perf} {msg}")
     else:
-        print(str(code) + " " + svc + " - " + msg)
+        print(f"{code} {svc} - {msg}")
 
-def run_cmd(cmd):
+def run_cmd(cmd: list[str]) -> tuple[int, str, str]:
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return p.returncode, p.stdout, p.stderr
 
-def sha256_file(p):
+def sha256_file(p: Path) -> str:
     h = hashlib.sha256()
     with p.open("rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)
-            if not chunk:
-                break
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
 
-def sha256_tree(paths_list):
+def sha256_tree(paths) -> tuple[str, int]:
+    # Deterministic hash over (path + content hash) for regular files under given paths
     files = []
-    for p in paths_list:
+    for p in paths:
         if not p.exists():
             continue
         if p.is_file():
@@ -157,60 +128,57 @@ def sha256_tree(paths_list):
             h.update(str(fp).encode() + b"\0<unreadable>\n")
     return h.hexdigest(), len(uniq)
 
-def check_integrity(st, key, svc, compute_fn):
-    if "integrity" not in st:
-        st["integrity"] = {}
+def check_integrity(st: dict, key: str, svc: str, compute_fn) -> None:
+    st.setdefault("integrity", {})
     baseline = st["integrity"].get(key)
     current = compute_fn()
 
     if baseline is None:
         st["integrity"][key] = current
-        local_line(1, svc, "baseline created (first run). verify and re-run if expected.")
+        local_line(1, svc, "Baseline created (first run). Verify and re-run if expected.")
         return
 
     if baseline != current:
-        local_line(2, svc, "changed since baseline. investigate; update baseline if legitimate.")
+        local_line(2, svc, "Changed since baseline. Investigate; update baseline if legitimate.")
     else:
-        local_line(0, svc, "ok")
+        local_line(0, svc, "OK")
 
-def read_text_file(p):
+def proc_readlink(pid: str, name: str) -> str:
     try:
-        return p.read_text(errors="ignore")
+        return os.readlink(f"/proc/{pid}/{name}")
     except Exception:
         return ""
 
-def read_proc_file(proc_path):
+def proc_read_text(pid: str, relpath: str) -> str:
     try:
-        with open(proc_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(f"/proc/{pid}/{relpath}", "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
     except Exception:
         return ""
 
-def pid_is_containerized(pid, cache):
+def pid_is_containerized(pid: str, cache: dict) -> bool:
     if pid in cache:
         return cache[pid]
-    cg = read_proc_file("/proc/" + pid + "/cgroup")
-    is_cont = False
-    if cg and cgroup_container_re.search(cg):
-        is_cont = True
-    cache[pid] = is_cont
-    return is_cont
+    cg = proc_read_text(pid, "cgroup")
+    val = bool(cg and CGROUP_CONTAINER_RE.search(cg))
+    cache[pid] = val
+    return val
 
-# ============================= service blocks =============================
+# ======================================================================
+# ----------------------------- SEC_SSH_AUTH -----------------------------
+# SSH brute-force signal: count auth failures since last run using journald cursor delta.
 
-# ----------------------------- sec_ssh_auth -----------------------------
-
-def run_journalctl_after_cursor(unit, cursor):
+def run_journalctl_after_cursor(unit: str, cursor: str | None):
     cmd = ["journalctl", "--no-pager", "--output=json", "--show-cursor"]
     if unit:
         cmd += ["-u", unit]
     if cursor:
         cmd += ["--after-cursor", cursor]
-    cmd += ["-n", "5000"]
+    cmd += ["-n", "5000"]  # safety cap
 
     rc, out, err = run_cmd(cmd)
     if rc != 0:
-        return None, None, "journalctl error: " + err.strip()[:200]
+        return None, None, f"journalctl error: {err.strip()[:200]}"
 
     new_cursor = None
     events = []
@@ -223,35 +191,29 @@ def run_journalctl_after_cursor(unit, cursor):
             continue
         try:
             obj = json.loads(line)
-            msg = obj.get("message", "") or obj.get("MESSAGE", "")
+            msg = obj.get("MESSAGE", "")
             if msg:
                 events.append(msg)
-        except Exception:
+        except json.JSONDecodeError:
             continue
 
     return events, new_cursor, None
 
-def check_ssh_auth(st):
-    if not sec_ssh_auth_isactive:
-        local_line(0, "sec_ssh_auth", "disabled")
-        return
-
-    if "ssh" not in st:
-        st["ssh"] = {}
+def check_ssh_auth(st: dict) -> None:
+    st.setdefault("ssh", {})
     cursor = st["ssh"].get("cursor")
 
     events, new_cursor, err = run_journalctl_after_cursor("ssh", cursor)
     if err is not None:
-        local_line(3, "sec_ssh_auth", "cannot read journal: " + err)
+        local_line(3, "SEC_SSH_AUTH", f"Cannot read journal: {err}")
         return
 
     failures = 0
     ips = {}
-
     for msg in events:
-        if fail_re.search(msg):
+        if FAIL_RE.search(msg):
             failures += 1
-            m = ip_re.search(msg)
+            m = IP_RE.search(msg)
             if m:
                 ip = m.group(1)
                 ips[ip] = ips.get(ip, 0) + 1
@@ -260,25 +222,24 @@ def check_ssh_auth(st):
         st["ssh"]["cursor"] = new_cursor
 
     uniq_ips = len(ips)
-    top_ip = "-"
-    if ips:
-        top_ip = max(ips.items(), key=lambda kv: kv[1])[0]
+    top_ip = max(ips.items(), key=lambda kv: kv[1])[0] if ips else "-"
 
-    perf = "failures=" + str(failures) + ";" + str(ssh_warn) + ";" + str(ssh_crit) + "|uniq_ips=" + str(uniq_ips)
-
-    if failures >= ssh_crit:
-        local_line(2, "sec_ssh_auth", "ssh auth failures: " + str(failures) + ", uniq_ips=" + str(uniq_ips) + ", top=" + top_ip, perf=perf)
-    elif failures >= ssh_warn:
-        local_line(1, "sec_ssh_auth", "ssh auth failures: " + str(failures) + ", uniq_ips=" + str(uniq_ips) + ", top=" + top_ip, perf=perf)
+    perf = f"failures={failures};{SSH_WARN};{SSH_CRIT}|uniq_ips={uniq_ips}"
+    if failures >= SSH_CRIT:
+        local_line(2, "SEC_SSH_AUTH", f"SSH auth failures: {failures}, uniq_ips={uniq_ips}, top={top_ip}", perf=perf)
+    elif failures >= SSH_WARN:
+        local_line(1, "SEC_SSH_AUTH", f"SSH auth failures: {failures}, uniq_ips={uniq_ips}, top={top_ip}", perf=perf)
     else:
-        local_line(0, "sec_ssh_auth", "ok (failures=" + str(failures) + ")", perf=perf)
+        local_line(0, "SEC_SSH_AUTH", f"OK (failures={failures})", perf=perf)
 
-# ----------------------------- sec_proc -----------------------------
+# ======================================================================
+# ----------------------------- SEC_PROC -----------------------------
+# Runtime anomaly signal: flag suspicious processes using args patterns + /proc/<pid>/exe stronger checks.
 
 def check_suspicious_processes():
     rc, out, err = run_cmd(["ps", "-eo", "pid=,user=,pcpu=,pmem=,args="])
     if rc != 0:
-        return None, None, "ps error: " + err.strip()[:200]
+        return None, None, f"ps error: {err.strip()[:200]}"
 
     suspicious = []
     cgroup_cache = {}
@@ -292,106 +253,90 @@ def check_suspicious_processes():
         if len(parts) < 5:
             continue
 
-        pid = parts[0]
-        user = parts[1]
-        pcpu = parts[2]
-        pmem = parts[3]
-        args = parts[4]
+        pid, user, pcpu, pmem, args = parts
 
-        # allowlist first
-        if allow_proc_name_re.search(args):
+        # Allowlist first (reduce noise)
+        if ALLOW_PROC_ARGS_RE.search(args):
             continue
 
-        matched_path = bool(susp_path_re.search(args))
-        matched_deleted = bool(deleted_re.search(args))
-        matched_name = bool(susp_name_re.search(args))
+        exe = proc_readlink(pid, "exe")
+        exe_is_temp = any(exe.startswith(pref) for pref in TEMP_EXE_PREFIXES) if exe else False
 
-        if not (matched_path or matched_deleted or matched_name):
+        matched_deleted = bool(DELETED_RE.search(args))
+        matched_name = bool(SUSP_NAME_RE.search(args))
+        matched_tmp_in_args = bool(SUSP_ARGS_PATH_RE.search(args))
+
+        # Container handling: don't ignore containers entirely; just suppress weak-only signals
+        is_container = pid_is_containerized(pid, cgroup_cache)
+        weak_only = matched_tmp_in_args and not (matched_deleted or matched_name or exe_is_temp)
+
+        if is_container and weak_only:
             continue
 
-        # ignore known runtime binaries if they only matched the "path" heuristic
-        if allow_runtime_args_re.search(args) and not (matched_deleted or matched_name):
-            continue
-
-        # skip containerized processes to avoid noisy false positives
-        if pid_is_containerized(pid, cgroup_cache):
-            continue
-
-        suspicious.append((pid, user, pcpu, pmem, args[:160]))
+        if exe_is_temp or matched_deleted or matched_name or matched_tmp_in_args:
+            # If exe is temp -> strong; else rely on other flags
+            suspicious.append((pid, user, pcpu, pmem, (exe or "-")[:120], args[:160]))
 
     return suspicious, len(suspicious), None
 
-def check_proc(st):
-    if not sec_proc_isactive:
-        local_line(0, "sec_proc", "disabled")
-        return
-
+def check_proc(st: dict) -> None:
     susp_list, susp_count, err = check_suspicious_processes()
     if err is not None:
-        local_line(3, "sec_proc", "cannot list processes: " + err)
+        local_line(3, "SEC_PROC", f"Cannot list processes: {err}")
         return
 
     examples = "-"
     if susp_count:
         ex = []
-        for item in susp_list[:3]:
-            ex.append(item[0] + ":" + item[1] + ":" + item[4])
+        for pid, user, _, _, exe, args in susp_list[:3]:
+            ex.append(f"{pid}:{user}:exe={exe}:args={args}")
         examples = "; ".join(ex)
 
-    perf = "susp=" + str(susp_count) + ";" + str(susp_proc_warn) + ";" + str(susp_proc_crit)
-
-    if susp_count >= susp_proc_crit:
-        local_line(2, "sec_proc", "suspicious processes: " + str(susp_count) + " (examples: " + examples + ")", perf=perf)
-    elif susp_count >= susp_proc_warn:
-        local_line(1, "sec_proc", "suspicious processes: " + str(susp_count) + " (examples: " + examples + ")", perf=perf)
+    perf = f"susp={susp_count};{SUSP_PROC_WARN};{SUSP_PROC_CRIT}"
+    if susp_count >= SUSP_PROC_CRIT:
+        local_line(2, "SEC_PROC", f"Suspicious processes: {susp_count} (examples: {examples})", perf=perf)
+    elif susp_count >= SUSP_PROC_WARN:
+        local_line(1, "SEC_PROC", f"Suspicious processes: {susp_count} (examples: {examples})", perf=perf)
     else:
-        local_line(0, "sec_proc", "ok (suspicious=" + str(susp_count) + ")", perf=perf)
+        local_line(0, "SEC_PROC", f"OK (suspicious={susp_count})", perf=perf)
 
-# ----------------------------- sec_fstab -----------------------------
+# ======================================================================
+# ----------------------------- SEC_FSTAB -----------------------------
+# Integrity baseline: hash /etc/fstab and alert on changes vs baseline.
 
-def check_fstab(st):
-    if not sec_fstab_isactive:
-        local_line(0, "sec_fstab", "disabled")
-        return
-
+def check_fstab(st: dict) -> None:
     def fstab_hash():
-        if not fstab_path.exists():
+        if not FSTAB_PATH.exists():
             return "missing"
-        return sha256_file(fstab_path)
+        return sha256_file(FSTAB_PATH)
 
-    check_integrity(st, "fstab_sha256", "sec_fstab", fstab_hash)
+    check_integrity(st, "fstab_sha256", "SEC_FSTAB", fstab_hash)
 
-# ----------------------------- sec_cron -----------------------------
+# ======================================================================
+# ----------------------------- SEC_CRON -----------------------------
+# Persistence baseline: deterministic hash of cron system paths and user crontabs directory tree.
 
-def check_cron(st):
-    if not sec_cron_isactive:
-        local_line(0, "sec_cron", "disabled")
-        return
-
+def check_cron(st: dict) -> None:
     def cron_hash():
-        digest, nfiles = sha256_tree(cron_paths)
-        return digest + ":" + str(nfiles)
+        digest, nfiles = sha256_tree(CRON_PATHS)
+        return f"{digest}:{nfiles}"
 
-    check_integrity(st, "cron_tree", "sec_cron", cron_hash)
+    check_integrity(st, "cron_tree", "SEC_CRON", cron_hash)
 
-# ----------------------------- sec_systemd_persist -----------------------------
+# ======================================================================
+# ----------------------------- SEC_SYSTEMD_PERSIST -----------------------------
+# Persistence (strong): delta on enabled systemd service units; new enabled units are high-signal.
 
-def check_systemd_persist(st):
-    if not sec_systemd_persist_isactive:
-        local_line(0, "sec_systemd_persist", "disabled")
-        return
-
+def check_systemd_persist(st: dict) -> None:
     rc, out, err = run_cmd(["systemctl", "list-unit-files", "--type=service", "--state=enabled", "--no-pager"])
     if rc != 0:
-        local_line(3, "sec_systemd_persist", "cannot list enabled units: " + err.strip()[:160])
+        local_line(3, "SEC_SYSTEMD_PERSIST", f"Cannot list enabled units: {err.strip()[:160]}")
         return
 
     units = []
     for line in out.splitlines():
         line = line.strip()
-        if not line:
-            continue
-        if line.startswith("unit file") or line.startswith("0 unit files"):
+        if not line or line.startswith("UNIT FILE") or line.startswith("0 unit files"):
             continue
         parts = line.split()
         if len(parts) >= 2 and parts[1] == "enabled":
@@ -402,27 +347,28 @@ def check_systemd_persist(st):
 
     if prev is None:
         st["systemd_units_enabled"] = units
-        local_line(1, "sec_systemd_persist", "baseline created (enabled units)")
+        local_line(1, "SEC_SYSTEMD_PERSIST", "Baseline created (enabled units)")
         return
 
     new_units = sorted(set(units) - set(prev))
     st["systemd_units_enabled"] = units
 
     if new_units:
-        local_line(2, "sec_systemd_persist", "new enabled units: " + ", ".join(new_units[:8]))
+        local_line(2, "SEC_SYSTEMD_PERSIST", f"New enabled units: {', '.join(new_units[:8])}")
     else:
-        local_line(0, "sec_systemd_persist", "ok")
+        local_line(0, "SEC_SYSTEMD_PERSIST", "OK")
 
-# ----------------------------- sec_ssh_keys -----------------------------
+# ======================================================================
+# ----------------------------- SEC_SSH_KEYS -----------------------------
+# Account takeover (very strong): baseline+delta on authorized_keys for root and /home/* users.
 
-def collect_authorized_keys():
-    paths = [ssh_authorized_key_paths[0]]
-    base = ssh_authorized_key_paths[1]
+def collect_authorized_keys() -> dict:
+    paths = [AUTH_KEY_PATHS[0]]
+    base = AUTH_KEY_PATHS[1]
 
     try:
         if base.exists() and base.is_dir():
-            for hp in base.glob("*/.ssh/authorized_keys"):
-                paths.append(hp)
+            paths.extend(list(base.glob("*/.ssh/authorized_keys")))
     except Exception:
         pass
 
@@ -435,221 +381,160 @@ def collect_authorized_keys():
                 out[str(p)] = "unreadable"
     return out
 
-def check_ssh_keys(st):
-    if not sec_ssh_keys_isactive:
-        local_line(0, "sec_ssh_keys", "disabled")
-        return
-
+def check_ssh_keys(st: dict) -> None:
     current = collect_authorized_keys()
     prev = st.get("ssh_authorized_keys")
 
     if prev is None:
         st["ssh_authorized_keys"] = current
-        local_line(1, "sec_ssh_keys", "baseline created (authorized_keys)")
+        local_line(1, "SEC_SSH_KEYS", "Baseline created (authorized_keys)")
         return
 
-    changed = []
-    for k in current:
-        if prev.get(k) != current[k]:
-            changed.append(k)
-
-    removed = []
-    for k in prev:
-        if k not in current:
-            removed.append(k)
+    changed = sorted([k for k in current if prev.get(k) != current[k]])
+    removed = sorted([k for k in prev if k not in current])
 
     st["ssh_authorized_keys"] = current
 
     if changed or removed:
-        msg_parts = []
+        parts = []
         if changed:
-            msg_parts.append("changed=" + str(len(changed)))
+            parts.append(f"changed={len(changed)}")
         if removed:
-            msg_parts.append("removed=" + str(len(removed)))
-        examples = (sorted(changed) + sorted(removed))[:6]
-        local_line(2, "sec_ssh_keys", "authorized_keys delta (" + ", ".join(msg_parts) + "): " + ", ".join(examples))
+            parts.append(f"removed={len(removed)}")
+        examples = (changed + removed)[:6]
+        local_line(2, "SEC_SSH_KEYS", f"authorized_keys delta ({', '.join(parts)}): {', '.join(examples)}")
     else:
-        local_line(0, "sec_ssh_keys", "ok")
+        local_line(0, "SEC_SSH_KEYS", "OK")
 
-# ----------------------------- sec_setuid -----------------------------
+# ======================================================================
+# ----------------------------- SEC_SETUID -----------------------------
+# Privilege escalation (strong): baseline+delta on setuid binaries (new entries are typically CRIT).
 
-def collect_setuid_files():
-    rc, out, err = run_cmd(["find", "/", "-xdev", "-perm", "-4000", "-type", "f"])
+def collect_setuid_files() -> list[str]:
+    rc, out, _ = run_cmd(["find", "/", "-xdev", "-perm", "-4000", "-type", "f"])
     if rc != 0:
         return []
-    files = []
-    for ln in out.splitlines():
-        ln = ln.strip()
-        if ln:
-            files.append(ln)
-    return sorted(set(files))
+    return sorted(set(ln.strip() for ln in out.splitlines() if ln.strip()))
 
-def check_setuid(st):
-    if not sec_setuid_isactive:
-        local_line(0, "sec_setuid", "disabled")
-        return
-
+def check_setuid(st: dict) -> None:
     current = collect_setuid_files()
     prev = st.get("setuid_files")
 
     if prev is None:
         st["setuid_files"] = current
-        local_line(1, "sec_setuid", "baseline created (setuid list)")
+        local_line(1, "SEC_SETUID", "Baseline created (setuid list)")
         return
 
     new = sorted(set(current) - set(prev))
     st["setuid_files"] = current
 
     if new:
-        local_line(2, "sec_setuid", "new setuid binaries: " + ", ".join(new[:6]))
+        local_line(2, "SEC_SETUID", f"New setuid binaries: {', '.join(new[:6])}")
     else:
-        local_line(0, "sec_setuid", "ok")
+        local_line(0, "SEC_SETUID", "OK")
 
-# ----------------------------- sec_listen -----------------------------
+# ======================================================================
+# ----------------------------- SEC_LISTEN -----------------------------
+# Backdoor/network signal: delta on TCP listening sockets; new listeners trigger WARN by default.
 
-def parse_listen_ports(ss_line):
-    # try to extract local port from ss output line
-    # examples: 0.0.0.0:22 or [::]:80 or 127.0.0.1:631
-    m = re.search(r"(\[::\]|[0-9a-fA-F\.:]+):(\d+)\b", ss_line)
-    if not m:
-        return None
+def parse_local_port(local_addr: str) -> int | None:
+    # local_addr examples: "0.0.0.0:22", "[::]:80", "*:9100"
     try:
-        return int(m.group(2))
+        if local_addr.startswith("["):
+            # [::]:80
+            _, port = local_addr.rsplit("]:", 1)
+            return int(port)
+        if ":" in local_addr:
+            _, port = local_addr.rsplit(":", 1)
+            return int(port)
     except Exception:
         return None
+    return None
 
-def collect_tcp_listeners():
-    rc, out, err = run_cmd(["ss", "-lntp"])
+def collect_tcp_listeners() -> list[str]:
+    # -H removes header; format is stable enough for token parsing
+    rc, out, err = run_cmd(["ss", "-lntpH"])
     if rc != 0:
         return []
     listeners = []
     for line in out.splitlines():
         line = line.strip()
-        if not line or line.lower().startswith("state"):
+        if not line:
             continue
-        if line.startswith("LISTEN") or line.startswith("listen"):
-            listeners.append(line)
+        if not line.startswith("LISTEN"):
+            continue
+        listeners.append(line)
     return sorted(set(listeners))
 
-def check_listen(st):
-    if not sec_listen_isactive:
-        local_line(0, "sec_listen", "disabled")
-        return
-
+def check_listen(st: dict) -> None:
     current = collect_tcp_listeners()
     prev = st.get("tcp_listeners")
 
     if prev is None:
         st["tcp_listeners"] = current
-        local_line(1, "sec_listen", "baseline created (tcp listeners)")
+        local_line(1, "SEC_LISTEN", "Baseline created (TCP listeners)")
         return
 
     new = sorted(set(current) - set(prev))
     st["tcp_listeners"] = current
 
-    # high-port signal (current state, not only delta)
-    high_ports = []
-    for line in current:
-        port = parse_listen_ports(line)
-        if port is not None and port >= tcp_high_port_threshold:
-            high_ports.append(port)
-    high_ports = sorted(set(high_ports))
-
-    new_count = len(new)
-    high_count = len(high_ports)
-
-    perf = "new=" + str(new_count) + ";;;|high_ports=" + str(high_count) + ";" + str(tcp_high_port_warn) + ";" + str(tcp_high_port_crit)
-
-    if high_count >= tcp_high_port_crit:
-        local_line(2, "sec_listen", "tcp listeners on high ports (>= " + str(tcp_high_port_threshold) + "): " + ", ".join([str(p) for p in high_ports[:8]]), perf=perf)
-    elif high_count >= tcp_high_port_warn:
-        local_line(1, "sec_listen", "tcp listeners on high ports (>= " + str(tcp_high_port_threshold) + "): " + ", ".join([str(p) for p in high_ports[:8]]), perf=perf)
-    elif new:
-        local_line(1, "sec_listen", "new tcp listeners: " + str(new_count) + " (example: " + new[0][:140] + ")", perf=perf)
+    perf = f"new={len(new)};;;"
+    if new:
+        local_line(1, "SEC_LISTEN", f"New TCP listeners: {len(new)} (example: {new[0][:160]})", perf=perf)
     else:
-        local_line(0, "sec_listen", "ok", perf=perf)
+        local_line(0, "SEC_LISTEN", "OK", perf=perf)
 
-# ----------------------------- sec_users -----------------------------
+# ======================================================================
+# ----------------------------- SEC_USERS -----------------------------
+# New users (strong): delta on /etc/passwd; new UID>=HUMAN_UID_MIN is CRIT, system accounts are WARN.
 
-def parse_passwd_users():
+def parse_passwd_users() -> dict:
     users = {}
-    if not passwd_path.exists():
+    if not PASSWD_PATH.exists():
         return users
-
-    txt = read_text_file(passwd_path)
-    for line in txt.splitlines():
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split(":")
-        if len(parts) < 7:
-            continue
-        name = parts[0]
-        uid = parts[2]
-        gid = parts[3]
-        home = parts[5]
-        shell = parts[6]
-        try:
-            uid_i = int(uid)
-            gid_i = int(gid)
-        except Exception:
-            continue
-        users[name] = {"uid": uid_i, "gid": gid_i, "home": home, "shell": shell}
+    try:
+        for line in PASSWD_PATH.read_text(errors="ignore").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(":")
+            if len(parts) < 7:
+                continue
+            name, _, uid, gid, _, home, shell = parts[:7]
+            try:
+                uid_i = int(uid)
+                gid_i = int(gid)
+            except ValueError:
+                continue
+            users[name] = {"uid": uid_i, "gid": gid_i, "home": home, "shell": shell}
+    except Exception:
+        return users
     return users
 
-def check_new_users(st):
-    if not sec_users_isactive:
-        local_line(0, "sec_users", "disabled")
-        return
-
+def check_new_users(st: dict) -> None:
     current = parse_passwd_users()
     prev = st.get("passwd_users")
 
     if prev is None:
         st["passwd_users"] = current
-        local_line(1, "sec_users", "baseline created (/etc/passwd snapshot)")
+        local_line(1, "SEC_USERS", "Baseline created (/etc/passwd snapshot)")
         return
 
     new_names = sorted(set(current.keys()) - set(prev.keys()))
-    new_human = []
-    new_system = []
-
-    for u in new_names:
-        if current[u]["uid"] >= 1000 and u != "nobody":
-            new_human.append(u)
-        else:
-            new_system.append(u)
-
     st["passwd_users"] = current
 
+    new_human = [u for u in new_names if current[u]["uid"] >= HUMAN_UID_MIN and u not in ("nobody",)]
+    new_system = [u for u in new_names if u not in new_human]
+
+    perf = f"new_human={len(new_human)};;;|new_system={len(new_system)};;;"
     if new_human:
-        local_line(2, "sec_users", "new users (uid>=1000): " + ", ".join(new_human[:8]), perf="new=" + str(len(new_human)) + ";;;")
+        local_line(2, "SEC_USERS", f"New users (uid>={HUMAN_UID_MIN}): {', '.join(new_human[:8])}", perf=perf)
     elif new_system:
-        local_line(1, "sec_users", "new system users: " + ", ".join(new_system[:8]), perf="new=" + str(len(new_system)) + ";;;")
+        local_line(1, "SEC_USERS", f"New system users: {', '.join(new_system[:8])}", perf=perf)
     else:
-        local_line(0, "sec_users", "ok", perf="new=0;;;")
+        local_line(0, "SEC_USERS", "OK", perf=perf)
 
-# ----------------------------- sec_auth_files -----------------------------
-
-def check_auth_files(st):
-    if not sec_auth_files_isactive:
-        local_line(0, "sec_auth_files", "disabled")
-        return
-
-    def auth_hash():
-        parts = []
-        for p in [passwd_path, shadow_path, group_path]:
-            if not p.exists():
-                parts.append(str(p) + "=missing")
-            else:
-                try:
-                    parts.append(str(p) + "=" + sha256_file(p))
-                except Exception:
-                    parts.append(str(p) + "=unreadable")
-        return "|".join(parts)
-
-    check_integrity(st, "auth_files_sha256", "sec_auth_files", auth_hash)
-
-# ============================= main =============================
+# ======================================================================
+# ----------------------------- main -----------------------------
 
 def main():
     st = load_state()
@@ -664,7 +549,6 @@ def main():
     check_setuid(st)
     check_listen(st)
     check_new_users(st)
-    check_auth_files(st)
 
     st["meta"] = {"last_run": now}
     save_state(st)
