@@ -1,0 +1,33 @@
+- name: journalctl log file filter
+  hosts: all
+  become: yes
+  become_user: root
+  gather_facts: false
+
+  vars:
+    output_file: "/root/output.log"
+    include_regex: "ERROR"
+    exclude_regex: "^ERROR-01"
+    unit_name: ""        # es: "ssh.service" (empity = system wide)
+    max_lines: 200000
+
+  tasks:
+    - name: create filter script
+      copy:
+        dest: /root/filter_journal.sh
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          out="$1"; inc="$2"; exc="$3"; unit="${4:-}"; n="${5:-200000}"
+          args=(--no-pager -o short-iso -n "$n"); [[ -n "$unit" ]] && args+=(-u "$unit")
+          journalctl "${args[@]}" | grep -E -- "$inc" | grep -Ev -- "$exc" > "$out" || true
+
+    - name: run filter script
+      command: >
+        /root/filter_journal.sh
+        {{ output_file | quote }}
+        {{ include_regex | quote }}
+        {{ exclude_regex | quote }}
+        {{ unit_name | quote }}
+        {{ max_lines | quote }}
