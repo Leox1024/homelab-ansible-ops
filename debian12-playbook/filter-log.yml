@@ -6,7 +6,7 @@
 
   vars:
     output_file: "/root/output.log"
-    include_regex: "ERROR"
+    include_regex: "ERROR" # allow multiple args: "error|ERROR|WARN...." just use OR operator
     exclude_regex: "^ERROR-01"
     unit_name: ""        # es: "ssh.service" (empity = system wide)
     max_lines: 200000
