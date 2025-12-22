@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Checkmk local security checks (simple, stateful baselines where useful)
+# checkmk local security checks
 
 import os
 import re
@@ -14,15 +14,13 @@ from pathlib import Path
 STATE_DIR = Path("/var/lib/check_mk_agent/security_watch")
 STATE_FILE = STATE_DIR / "state.json"
 
-# Env knobs (uppercase, consistent)
+# ssh config
 SSH_WARN = int(os.getenv("CMK_SSH_FAIL_WARN", "10"))
 SSH_CRIT = int(os.getenv("CMK_SSH_FAIL_CRIT", "20"))
 
-SUSP_PROC_WARN = int(os.getenv("CMK_SUSP_PROC_WARN", "1"))
-SUSP_PROC_CRIT = int(os.getenv("CMK_SUSP_PROC_CRIT", "3"))
-
 HUMAN_UID_MIN = int(os.getenv("CMK_HUMAN_UID_MIN", "1000"))
 
+# path check config (make sure specific path are not changed)
 FSTAB_PATH = Path("/etc/fstab")
 PASSWD_PATH = Path("/etc/passwd")
 CRON_PATHS = [
@@ -43,7 +41,10 @@ AUTH_KEY_PATHS = [
 IP_RE = re.compile(r"\bfrom\s+([0-9a-fA-F\.:]+)\b")
 FAIL_RE = re.compile(r"(Failed password|Invalid user|authentication failure)", re.IGNORECASE)
 
-# Process heuristics (keep cheap; score using /proc/<pid>/exe when possible)
+# process check config
+SUSP_PROC_WARN = int(os.getenv("CMK_SUSP_PROC_WARN", "1"))
+SUSP_PROC_CRIT = int(os.getenv("CMK_SUSP_PROC_CRIT", "3"))
+
 SUSP_ARGS_PATH_RE = re.compile(r"(^|\s)(/tmp/|/dev/shm/|/var/tmp/)", re.IGNORECASE)
 SUSP_NAME_RE = re.compile(r"\b(kworkerd|kworker\d+|systemd--|dbusd--)\b", re.IGNORECASE)
 DELETED_RE = re.compile(r"\(deleted\)", re.IGNORECASE)
@@ -360,7 +361,7 @@ def check_systemd_persist(st: dict) -> None:
 
 # ======================================================================
 # ----------------------------- SEC_SSH_KEYS -----------------------------
-# Account takeover (very strong): baseline+delta on authorized_keys for root and /home/* users.
+# check on authorized_keys for root and /home/* users.
 
 def collect_authorized_keys() -> dict:
     paths = [AUTH_KEY_PATHS[0]]
@@ -408,7 +409,7 @@ def check_ssh_keys(st: dict) -> None:
 
 # ======================================================================
 # ----------------------------- SEC_SETUID -----------------------------
-# Privilege escalation (strong): baseline+delta on setuid binaries (new entries are typically CRIT).
+# check on setuid binaries (new entries are typically CRIT).
 
 def collect_setuid_files() -> list[str]:
     rc, out, _ = run_cmd(["timeout", "2", "find", "/", "-xdev", "-perm", "-4000", "-type", "f"])
@@ -435,7 +436,7 @@ def check_setuid(st: dict) -> None:
 
 # ======================================================================
 # ----------------------------- SEC_LISTEN -----------------------------
-# Backdoor/network signal: delta on TCP listening sockets; new listeners trigger WARN by default.
+# backdoor/network: check on TCP listening sockets; new listeners trigger WARN by default.
 
 def parse_local_port_from_ss_line(ss_line):
     # ss -lntp columns: State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
@@ -504,7 +505,7 @@ def check_listen(st: dict) -> None:
 
 # ======================================================================
 # ----------------------------- SEC_USERS -----------------------------
-# New users (strong): delta on /etc/passwd; new UID>=HUMAN_UID_MIN is CRIT, system accounts are WARN.
+# New users: check on /etc/passwd; new UID>=HUMAN_UID_MIN is CRIT, system accounts are WARN.
 
 def parse_passwd_users() -> dict:
     users = {}
