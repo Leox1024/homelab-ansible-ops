@@ -6,10 +6,11 @@
 
   vars:
     output_file: "/root/output.log"
-    include_regex: "ERROR" # allow multiple args: "error|ERROR|WARN...." just use OR operator
+    include_regex: "ERROR"   # allow OR: "ERROR|WARN|error"
     exclude_regex: "^ERROR-01"
-    unit_name: ""        # es: "ssh.service" (empity = system wide)
+    unit_name: ""            # empty = system wide
     max_lines: 200000
+    top_lines: 50            # max line output.log on screen 
 
   tasks:
     - name: create filter script
@@ -31,3 +32,17 @@
         {{ exclude_regex | quote }}
         {{ unit_name | quote }}
         {{ max_lines | quote }}
+
+    - name: show top repeated log lines
+      shell: |
+        if [ -s {{ output_file | quote }} ]; then
+          sort {{ output_file | quote }} | uniq -c | sort -nr | head -n {{ top_lines | int }}
+        else
+          echo "NO_MATCHES"
+        fi
+      register: log_summary
+      changed_when: false
+
+    - name: print summary
+      debug:
+        msg: "{{ log_summary.stdout_lines }}"
