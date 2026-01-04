@@ -1,0 +1,31 @@
+- name: check journald disk usage cap
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    journald_system_max_use: "500M"
+
+  handlers:
+    - name: restart systemd-journald
+      ansible.builtin.service:
+        name: systemd-journald
+        state: restarted
+
+    - name: vacuum journald to cap
+      ansible.builtin.command: "journalctl --vacuum-size={{ journald_system_max_use }}"
+      changed_when: false
+
+  tasks:
+    - name: set SystemMaxUse in journald.conf
+      ansible.builtin.ini_file:
+        path: /etc/systemd/journald.conf
+        section: Journal
+        option: SystemMaxUse
+        value: "{{ journald_system_max_use }}"
+        create: true
+        no_extra_spaces: true
+      notify:
+        - restart systemd-journald
+        - vacuum journald to cap

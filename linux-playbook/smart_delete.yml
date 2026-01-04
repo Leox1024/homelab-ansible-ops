@@ -1,0 +1,90 @@
+- name: smart file/dir deleter
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    path_var: "/path/to/remove"  # set the dir or file to delete /path, /path/, /path/*, /path/file.txt (read down below for more info)
+    safety_checks: true          # if you set this to false you will be able to delete "critical" folder such as /etc, /boot, ecc
+
+  # path_var accept:
+  # /path/to/remove = will delete "remove" file or dir (depend if remove is a file or dir)
+  # /path/to/remove/ = will delete "remove" folder
+  # /path/to/remove/* = will delete EVERY file or dir inside "remove" folder
+  # /path/to/remove/file.txt = will delete "file.txt" only 
+
+  tasks:
+
+#-----------------------------------------------------#
+  
+    - name: stat the path
+      stat:
+        path: "{{ path_var }}"
+      register: path_stat
+
+    - name: fail on dangerous paths (/, /etc, /boot, ecc)
+      fail:
+        msg: "Refusing to operate on critical path: {{ path_var }}"
+      when:
+        - safety_checks | bool
+        - path_var.rstrip('/') in ["/", "/etc", "/var", "/bin", "/boot", "/usr", "/lib", "/lib64", "/sbin", "/dev", "/proc", "/sys"]
+
+    - name: DEBUG - Path stat result
+      debug:
+        var: path_stat
+    
+#-----------------------------------------------------#
+
+    # File check and deletion
+    - name: path is a file
+      debug:
+        msg: "{{ path_var }} is a file: deleting..."
+      when: path_stat.stat.isfile | default(false)
+
+    - name: delete file
+      file:
+        path: "{{ path_var }}"
+        state: absent
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isreg | default(false)
+    
+    - name: End play if file was deleted
+      meta: end_play
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isreg | default(false)
+
+#-----------------------------------------------------#
+
+    # Directory check and deletion
+    - name: path is a directory
+      debug:
+        msg: "{{ path_var }} is a directory: deleting..."
+      when: path_stat.stat.isdir | default(false)
+    
+    # Delete inside dir /path/to/delete/*
+    - name: handle wildcard deletion - delete only dir contents
+      find:
+        paths: "{{ path_var | regex_replace('/\\*$', '') }}"
+        file_type: any
+      register: files_to_delete
+      when: path_var.endswith('*')
+      
+    # Delete inside dir /path/to/delete/*
+    - name: delete files matched by wildcard
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ files_to_delete.files }}"
+      when: path_var.endswith('*')
+
+#-----------------------------------------------------#
+
+    # Classic delete of entire dir /path/to/delete
+    - name: delete the entire directory
+      file:
+        path: "{{ path_var }}"
+        state: absent
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isdir | default(false)
+
+    - name: end play if dir was deleted
+      meta: end_play
+      when: path_stat.stat.exists | default(false) and path_stat.stat.isdir | default(false)

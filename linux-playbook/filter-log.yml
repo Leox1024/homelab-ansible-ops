@@ -1,0 +1,55 @@
+- name: journalctl log file filter
+  hosts: all
+  become: yes
+  become_user: root
+  gather_facts: false
+
+  vars:
+    output_file: "/root/output.log"
+    include_regex: "ERROR"   # allow OR: "ERROR|WARN|error"
+    exclude_regex: "^ERROR-01"
+    unit_name: ""            # empty = system wide
+    max_lines: 200000
+    top_lines: 50            # max line output.log on screen 
+
+  tasks:
+    - name: create filter script
+      copy:
+        dest: /root/filter_journal.sh
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          out="$1"; inc="$2"; exc="$3"; unit="${4:-}"; n="${5:-200000}"
+          args=(--no-pager -o short-iso -n "$n"); [[ -n "$unit" ]] && args+=(-u "$unit")
+          journalctl "${args[@]}" | grep -E -- "$inc" | grep -Ev -- "$exc" > "$out" || true
+
+    - name: run filter script
+      command: >
+        /root/filter_journal.sh
+        {{ output_file | quote }}
+        {{ include_regex | quote }}
+        {{ exclude_regex | quote }}
+        {{ unit_name | quote }}
+        {{ max_lines | quote }}
+
+    - name: show top repeated log lines (normalized)
+      shell: |
+        f={{ output_file | quote }}
+        if [ -s "$f" ]; then
+          sed -E \
+            -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+[[:space:]]+//' \
+            -e 's/time="[^"]+"/time="<ts>"/g' \
+            -e 's#/sys/fs/cgroup/system\.slice/docker-[0-9a-f]{64}\.scope#/sys/fs/cgroup/system.slice/docker-<id>.scope#g' \
+            -e 's/docker-[0-9a-f]{64}/docker-<id>/g' \
+            "$f" \
+          | sort | uniq -c | sort -nr | head -n {{ top_lines | int }}
+        else
+          echo "NO_MATCHES"
+        fi
+      register: log_summary
+      changed_when: false
+
+    - name: print summary
+      debug:
+        msg: "{{ log_summary.stdout_lines }}"

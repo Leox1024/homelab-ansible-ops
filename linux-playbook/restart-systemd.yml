@@ -1,0 +1,14 @@
+- name: restart a system service
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    service_name: "sshd" 
+
+  tasks:
+    - name: "Restart the {{ service_name }} service"
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
