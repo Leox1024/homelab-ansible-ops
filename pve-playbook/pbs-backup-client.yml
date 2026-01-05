@@ -1,3 +1,5 @@
+# this playbook is used to backup important file of proxmox host
+
 - name: Run PBS file-level backup
   hosts: all
   become: yes
@@ -8,7 +10,7 @@
     pbs_datastore: "hosts-backup"
     pbs_username: "root@pam!hosts-backup"
     pbs_secret: "{{ vault_pbs_secret }}"
-    pbs_fingerprint: "99:44:7f:91:00:bd:1a:4b:35:25:b9:d9:6a:a4:71:cc:71:4d:8a:08:49:28:d3:25:df:9a:f5:36:ec:6e:71:eb"
+    pbs_fingerprint: "11:22:33:44:55...."
     backup_dir: "/etc"
 
   tasks:
