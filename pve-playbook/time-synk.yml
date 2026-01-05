@@ -7,7 +7,6 @@
   vars:
     # Set the desired timezone, e.g., "Europe/Rome"
     new_timezone: "Europe/Rome"
-    # For LXC, we use the same timezone value (can be changed if needed)
     timezone_region: "{{ new_timezone }}"
     # Set the NTP server to use for time synchronization
     ntp_server: "pool.ntp.org"
