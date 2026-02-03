@@ -44,7 +44,7 @@
         return_content: true
         status_code: 200
       register: wf_login
-      no_log: true
+      no_log: false
 
     - name: Extract token
       ansible.builtin.set_fact:
@@ -61,9 +61,8 @@
         return_content: true
         status_code: 200
       register: wf_vals
-      no_log: true  # contiene dati finanziari
+      no_log: false
 
-    # Normalizzazione & ordinamento: assumo che wf_vals.json sia una lista di record
     - name: Sort valuations by date ascending
       ansible.builtin.set_fact:
         valuations_sorted: "{{ (wf_vals.json | list) | sort(attribute='valuationDate') }}"
