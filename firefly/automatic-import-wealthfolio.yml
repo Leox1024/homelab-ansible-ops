@@ -129,7 +129,7 @@
 
         in_path = "{{ vals_path }}"
         out_path = "{{ out_csv }}"
-        invert = {{ invert_amount_sign | bool | lower }}
+        invert = {{ invert_amount_sign | bool | ternary('True', 'False') }}
 
         with open(in_path, "r", encoding="utf-8") as f:
             vals = json.load(f)
