@@ -42,12 +42,6 @@
           WEALTHFOLIO_BASE_URL, WEALTHFOLIO_PASSWORD,
           FIREFLY_IMPORTER_BASE_URL, FIREFLY_IMPORTER_SECRET, FIREFLY_ACCESS_TOKEN
 
-    - name: Ensure output dir exists
-      ansible.builtin.file:
-        path: "{{ output_dir }}"
-        state: directory
-        mode: "0700"
-
   tasks:
     - name: Login to Wealthfolio and get access token
       ansible.builtin.uri:
