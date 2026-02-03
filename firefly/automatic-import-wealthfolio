@@ -1,0 +1,183 @@
+---
+- name: Export Wealthfolio adjusted PL and upload to Firefly Importer
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    wealthfolio_base_url: "{{ lookup('env', 'WEALTHFOLIO_BASE_URL') | default('', true) }}"
+    wealthfolio_password: "{{ lookup('env', 'WEALTHFOLIO_PASSWORD') | default('', true) }}"
+    wealthfolio_account_id: "{{ lookup('env', 'WEALTHFOLIO_ACCOUNT_ID') | default('TOTAL', true) }}"
+
+    firefly_importer_base_url: "{{ lookup('env', 'FIREFLY_IMPORTER_BASE_URL') | default('', true) }}"
+    firefly_importer_secret: "{{ lookup('env', 'FIREFLY_IMPORTER_SECRET') | default('', true) }}"
+    firefly_access_token: "{{ lookup('env', 'FIREFLY_ACCESS_TOKEN') | default('', true) }}"
+
+    output_dir: "{{ lookup('env', 'OUTPUT_DIR') | default('/tmp', true) }}"
+    out_csv: "{{ output_dir }}/wealthfolio_adjusted_pl_{{ wealthfolio_account_id }}.csv"
+    out_json: "{{ output_dir }}/firefly_import_config.json"
+
+  pre_tasks:
+    - name: Validate required env vars
+      ansible.builtin.assert:
+        that:
+          - wealthfolio_base_url | length > 0
+          - wealthfolio_password | length > 0
+          - firefly_importer_base_url | length > 0
+          - firefly_importer_secret | length > 0
+          - firefly_access_token | length > 0
+        fail_msg: >
+          Missing required env vars. Need:
+          WEALTHFOLIO_BASE_URL, WEALTHFOLIO_PASSWORD,
+          FIREFLY_IMPORTER_BASE_URL, FIREFLY_IMPORTER_SECRET, FIREFLY_ACCESS_TOKEN
+
+  tasks:
+    - name: Login to Wealthfolio and get access token
+      ansible.builtin.uri:
+        url: "{{ wealthfolio_base_url }}/api/v1/auth/login"
+        method: POST
+        headers:
+          Accept: "application/json"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          password: "{{ wealthfolio_password }}"
+        return_content: true
+        status_code: 200
+      register: wf_login
+      no_log: true
+
+    - name: Extract token
+      ansible.builtin.set_fact:
+        wf_access_token: "{{ wf_login.json.accessToken }}"
+        wf_token_type: "{{ wf_login.json.tokenType | default('Bearer') }}"
+
+    - name: Fetch valuations history for account
+      ansible.builtin.uri:
+        url: "{{ wealthfolio_base_url }}/api/v1/valuations/history?accountId={{ wealthfolio_account_id }}"
+        method: GET
+        headers:
+          Accept: "application/json"
+          Authorization: "{{ wf_token_type }} {{ wf_access_token }}"
+        return_content: true
+        status_code: 200
+      register: wf_vals
+      no_log: true  # contiene dati finanziari
+
+    # Normalizzazione & ordinamento: assumo che wf_vals.json sia una lista di record
+    - name: Sort valuations by date ascending
+      ansible.builtin.set_fact:
+        valuations_sorted: "{{ (wf_vals.json | list) | sort(attribute='valuationDate') }}"
+
+    - name: Build CSV rows (Valuation Date, Adjusted, Opposing Account, Description)
+      ansible.builtin.set_fact:
+        csv_rows: "{{ csv_rows | default([]) + [ row_obj ] }}"
+      vars:
+        current: "{{ valuations_sorted[item] }}"
+        prev: "{{ (item > 0) | ternary(valuations_sorted[item-1], omit) }}"
+        # PL richiesto: costBasis - investmentMarketValue
+        pl_curr: "{{ (current.costBasis | float) - (current.investmentMarketValue | float) }}"
+        pl_prev: "{{ (item > 0) | ternary(((prev.costBasis | float) - (prev.investmentMarketValue | float)), 0.0) }}"
+        adjusted: "{{ (item > 0) | ternary((pl_curr - pl_prev), 0.0) }}"
+        row_obj:
+          valuation_date: "{{ current.valuationDate }}"
+          adjusted: "{{ '%.2f' | format(adjusted) }}"
+          opposing: "Investment"
+          description: "Investment Adjusted PL"
+      loop: "{{ range(0, valuations_sorted | length) | list }}"
+
+    - name: Write Firefly importer config JSON (static)
+      ansible.builtin.copy:
+        dest: "{{ out_json }}"
+        mode: "0600"
+        content: |
+          {
+              "version": 3,
+              "source": "ff3-importer-1.7.8",
+              "created_at": "2026-02-03T18:46:59+01:00",
+              "date": "Y-m-d",
+              "default_account": 25,
+              "delimiter": "comma",
+              "headers": true,
+              "rules": false,
+              "skip_form": false,
+              "add_import_tag": false,
+              "roles": [
+                  "date_transaction",
+                  "amount",
+                  "opposing-name",
+                  "description"
+              ],
+              "do_mapping": [
+                  false,
+                  false,
+                  false,
+                  false
+              ],
+              "mapping": [],
+              "duplicate_detection_method": "classic",
+              "ignore_duplicate_lines": true,
+              "unique_column_index": 0,
+              "unique_column_type": "internal_reference",
+              "flow": "file",
+              "content_type": "csv",
+              "custom_tag": "",
+              "identifier": "0",
+              "connection": "0",
+              "ignore_spectre_categories": false,
+              "grouped_transaction_handling": "",
+              "use_entire_opposing_address": false,
+              "map_all_data": false,
+              "pending_transactions": true,
+              "access_token": "",
+              "accounts": [],
+              "new_account": [],
+              "date_range": "",
+              "date_range_number": 30,
+              "date_range_unit": "d",
+              "date_not_before": "",
+              "date_not_after": "",
+              "nordigen_country": "",
+              "nordigen_bank": "",
+              "nordigen_requisitions": [],
+              "nordigen_max_days": "90",
+              "conversion": false,
+              "ignore_duplicate_transactions": false
+          }
+
+    - name: Render CSV file
+      ansible.builtin.template:
+        src: "templates/wealthfolio_adjusted_pl.csv.j2"
+        dest: "{{ out_csv }}"
+        mode: "0600"
+      vars:
+        csv_header: ["Valuation Date", "Adjusted", "Opposing Account", "Description"]
+        csv_rows_render: "{{ csv_rows }}"
+
+    - name: Upload CSV+JSON to Firefly Importer (multipart)
+      ansible.builtin.uri:
+        url: "{{ firefly_importer_base_url }}/autoupload?secret={{ firefly_importer_secret }}"
+        method: POST
+        headers:
+          Accept: "application/json"
+          Authorization: "Bearer {{ firefly_access_token }}"
+        body_format: form-multipart
+        body:
+          importable:
+            filename: "{{ out_csv | basename }}"
+            mime_type: "text/csv"
+            content: "{{ lookup('file', out_csv) }}"
+          json:
+            filename: "{{ out_json | basename }}"
+            mime_type: "application/json"
+            content: "{{ lookup('file', out_json) }}"
+        status_code: [200, 201, 202]
+        return_content: true
+      register: firefly_upload
+      no_log: true
+
+    - name: Show upload response (non-sensitive)
+      ansible.builtin.debug:
+        msg:
+          - "CSV generated: {{ out_csv }}"
+          - "JSON generated: {{ out_json }}"
+          - "Firefly importer status: {{ firefly_upload.status }}"
