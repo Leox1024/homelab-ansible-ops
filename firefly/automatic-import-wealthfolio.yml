@@ -84,6 +84,14 @@
             | default([])
             | list
           }}
+    
+    - name: Write valuations to temp json (non-sensitive-ish, but keep permissions strict)
+      ansible.builtin.copy:
+        dest: "{{ output_dir }}/wealthfolio_vals_{{ wealthfolio_account_id }}.json"
+        mode: "0600"
+        content: "{{ valuations | to_nice_json }}"
+      no_log: true
+    
 
     - name: Filter only mapping entries (drop garbage rows)
       ansible.builtin.set_fact:
@@ -110,38 +118,54 @@
         fail_msg: "API order is not ascending (old->new). Delta computation would be wrong."
 
     # ---- Build CSV lines (old->new): first row 0.00, then delta to previous day ----
-    - name: Init csv_lines
-      ansible.builtin.set_fact:
-        csv_lines: []
-
-    - name: First row (oldest day) adjusted=0.00
-      ansible.builtin.set_fact:
-        csv_lines: "{{ csv_lines + [ first_line ] }}"
-      vars:
-        first: "{{ valuations[0] }}"
-        first_date: "{{ (first.valuationDate | default(''))[:10] }}"
-        first_line: "{{ first_date }},0.00,{{ opposing_account_value }},{{ description_value }}"
-      when: (valuations | length) > 0
-
-    - name: Rows from second day onwards (old->new)
-      ansible.builtin.set_fact:
-        csv_lines: "{{ csv_lines + [ line ] }}"
-      vars:
-        cur: "{{ valuations[item] }}"
-        prev: "{{ valuations[item-1] }}"
-        cur_date: "{{ (cur.valuationDate | default(''))[:10] }}"
-        delta: "{{ ((cur.totalValue | default(0)) | float) - ((prev.totalValue | default(0)) | float) }}"
-        sign_factor: "{{ 1 - 2 * (invert_amount_sign | int) }}"
-        adjusted_num: "{{ delta * (sign_factor | float) }}"
-        line: "{{ cur_date }},{{ '%.2f' | format(adjusted_num | float) }},{{ opposing_account_value }},{{ description_value }}"
-      loop: "{{ range(1, valuations | length) | list }}"
-      when: (valuations | length) > 1
-
-    - name: Write CSV file (deterministic)
-      ansible.builtin.copy:
-        dest: "{{ out_csv }}"
-        mode: "0600"
-        content: "{{ csv_header ~ '\n' ~ (csv_lines | join('\n')) ~ '\n' }}"
+    - name: Generate CSV (old->new) with python3 (no Jinja arithmetic)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - << 'PY'
+        import json
+        from decimal import Decimal, ROUND_HALF_UP
+    
+        in_path = "{{ output_dir }}/wealthfolio_vals_{{ wealthfolio_account_id }}.json"
+        out_path = "{{ out_csv }}"
+        invert = {{ invert_amount_sign | bool | lower }}
+    
+        with open(in_path, "r", encoding="utf-8") as f:
+            vals = json.load(f)
+    
+        # Expect list of dicts old->new
+        def d(x):
+            return Decimal(str(x))
+    
+        def q2(x: Decimal) -> str:
+            return str(x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    
+        header = "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
+        opp = "Investment"
+        desc = "Investment Adjusted PL"
+    
+        lines = [header]
+    
+        prev_total = None
+        for v in vals:
+            date = (v.get("valuationDate","") or "")[:10]
+            total = d(v.get("totalValue", 0))
+            if prev_total is None:
+                adj = Decimal("0.00")
+            else:
+                adj = total - prev_total
+            prev_total = total
+    
+            if invert:
+                adj = -adj
+    
+            lines.append(f"{date},{q2(adj)},{opp},{desc}")
+    
+        with open(out_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        PY
+      args:
+        executable: /bin/bash
+      no_log: true
 
     # ---- Firefly importer JSON config (static) ----
     - name: Write Firefly importer config JSON (static)
