@@ -166,7 +166,6 @@
         PY
       args:
         executable: /bin/bash
-      no_log: true
 
     - name: Write Firefly importer config JSON (static)
       ansible.builtin.copy:
