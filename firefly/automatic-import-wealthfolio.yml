@@ -82,7 +82,7 @@
 
         row_obj:
           date: "{{ cur.valuationDate }}"
-          adjusted: "{{ '%.2f' | format(adjusted_raw) }}"
+          adjusted: "{{ '%.2f' | format(adjusted_raw | float) }}"
           opposing: "Investment"
           description: "Investment Adjusted PL"
       loop: "{{ range(0, valuations | length) | list }}"
