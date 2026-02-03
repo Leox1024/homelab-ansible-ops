@@ -63,9 +63,7 @@
       register: wf_vals
       no_log: false
 
-    - name: Sort valuations by date ascending
-      ansible.builtin.set_fact:
-        valuations_sorted: "{{ (wf_vals.json | list) | sort(attribute='valuationDate') }}"
+
 
     - name: Build CSV rows (Valuation Date, Adjusted, Opposing Account, Description)
       ansible.builtin.set_fact:
@@ -77,25 +75,34 @@
             'description': 'Investment Adjusted PL'
           }
         ] }}"
+      # Assicuriamoci che il loop segua l'ordine cronologico corretto
       loop: "{{ valuations_sorted }}"
       loop_control:
         index_var: idx
       vars:
-        # Estraiamo e puliamo i valori correnti
-        c_mv: "{{ item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) }}"
-        c_cb: "{{ item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) }}"
+        # --- DATI CORRENTI (Oggi) ---
+        # Pulizia stringa -> Conversione Float -> Default 0
+        c_mv: "{{ item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) }}"
+        c_cb: "{{ item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) }}"
         
-        # Estraiamo e puliamo i valori precedenti
-        p_item: "{{ valuations_sorted[idx - 1] if idx > 0 else none }}"
-        p_mv: "{{ p_item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) if p_item else '0' }}"
-        p_cb: "{{ p_item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) if p_item else '0' }}"
+        # Profit/Loss di oggi: (Market Value - Cost Basis)
+        pl_curr: "{{ c_mv - c_cb }}"
 
-        # Eseguiamo i calcoli forzando il float ad ogni passo
-        pl_curr: "{{ (c_mv | float) - (c_cb | float) }}"
-        pl_prev: "{{ (p_mv | float) - (p_cb | float) }}"
+        # --- DATI PRECEDENTI (Ieri) ---
+        # Accediamo all'elemento precedente nella lista ordinata
+        p_item: "{{ valuations_sorted[idx - 1] if idx > 0 else none }}"
+        p_mv: "{{ p_item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) if p_item else 0.0 }}"
+        p_cb: "{{ p_item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) if p_item else 0.0 }}"
         
-        # Risultato finale
-        adjusted_val: "{{ (pl_curr | float - pl_prev | float) if idx > 0 else pl_curr | float }}"
+        # Profit/Loss di ieri
+        pl_prev: "{{ p_mv - p_cb }}"
+
+        # --- CALCOLO DELTA (Adjusted) ---
+        # Se è il primo giorno (idx 0), l'adjusted è il PL totale accumulato.
+        # Dal secondo giorno in poi, è la differenza: (PL oggi - PL ieri).
+        adjusted_val: "{{ (pl_curr - pl_prev) if idx > 0 else pl_curr }}"
+
+
 
 
     - name: Write Firefly importer config JSON (static)
