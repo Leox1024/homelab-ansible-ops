@@ -1,0 +1,253 @@
+---
+- name: Export Wealthfolio daily adjusted totalValue and upload to Firefly Importer
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    wealthfolio_base_url: "{{ lookup('env', 'WEALTHFOLIO_BASE_URL') | default('', true) }}"
+    wealthfolio_password: "{{ lookup('env', 'WEALTHFOLIO_PASSWORD') | default('', true) }}"
+    wealthfolio_account_id: "{{ lookup('env', 'WEALTHFOLIO_ACCOUNT_ID') | default('TOTAL', true) }}"
+
+    firefly_importer_base_url: "{{ lookup('env', 'FIREFLY_IMPORTER_BASE_URL') | default('', true) }}"
+    firefly_importer_secret: "{{ lookup('env', 'FIREFLY_IMPORTER_SECRET') | default('', true) }}"
+    firefly_access_token: "{{ lookup('env', 'FIREFLY_ACCESS_TOKEN') | default('', true) }}"
+
+    output_dir: "{{ lookup('env', 'OUTPUT_DIR') | default('/tmp', true) }}"
+
+    out_csv: "{{ output_dir }}/wealthfolio_adjusted_pl_{{ wealthfolio_account_id }}.csv"
+    out_json: "{{ output_dir }}/firefly_import_config.json"
+    vals_path: "{{ output_dir }}/wealthfolio_vals_{{ wealthfolio_account_id }}.json"
+
+    csv_header: "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
+    opposing_account_value: "Investment"
+    description_value: "Investment Adjusted PL"
+
+    invert_amount_sign: "{{ (lookup('env', 'INVERT_AMOUNT_SIGN') | default('false', true)) | bool }}"
+
+  pre_tasks:
+    - name: Validate required env vars
+      ansible.builtin.assert:
+        that:
+          - wealthfolio_base_url | length > 0
+          - wealthfolio_password | length > 0
+          - firefly_importer_base_url | length > 0
+          - firefly_importer_secret | length > 0
+          - firefly_access_token | length > 0
+        fail_msg: >
+          Missing required env vars:
+          WEALTHFOLIO_BASE_URL, WEALTHFOLIO_PASSWORD,
+          FIREFLY_IMPORTER_BASE_URL, FIREFLY_IMPORTER_SECRET, FIREFLY_ACCESS_TOKEN
+
+  tasks:
+    - name: Login to Wealthfolio and get access token
+      ansible.builtin.uri:
+        url: "{{ wealthfolio_base_url }}/api/v1/auth/login"
+        method: POST
+        headers:
+          Accept: "application/json"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          password: "{{ wealthfolio_password }}"
+        return_content: true
+        status_code: 200
+      register: wf_login
+      no_log: true
+
+    - name: Extract token
+      ansible.builtin.set_fact:
+        wf_access_token: "{{ wf_login.json.accessToken }}"
+        wf_token_type: "{{ wf_login.json.tokenType | default('Bearer') }}"
+
+    - name: Fetch valuations history (API order is assumed old->new)
+      ansible.builtin.uri:
+        url: "{{ wealthfolio_base_url }}/api/v1/valuations/history?accountId={{ wealthfolio_account_id }}"
+        method: GET
+        headers:
+          Accept: "application/json"
+          Authorization: "{{ wf_token_type }} {{ wf_access_token }}"
+        return_content: true
+        status_code: 200
+      register: wf_vals
+      no_log: true
+
+    - name: Normalize valuations list from API response
+      ansible.builtin.set_fact:
+        valuations_raw: >-
+          {{
+            (wf_vals.json.data if (wf_vals.json is mapping and 'data' in wf_vals.json) else wf_vals.json)
+            | default([])
+            | list
+          }}
+
+    - name: Filter only mapping entries (drop garbage rows)
+      ansible.builtin.set_fact:
+        valuations: "{{ valuations_raw | select('mapping') | list }}"
+
+    - name: Report counts (non-sensitive)
+      ansible.builtin.debug:
+        msg:
+          - "Valuations raw count: {{ valuations_raw | length }}"
+          - "Valuations valid count: {{ valuations | length }}"
+          - "Dropped entries: {{ (valuations_raw | length) - (valuations | length) }}"
+
+    - name: Fail if no valuation entries
+      ansible.builtin.assert:
+        that:
+          - valuations | length > 0
+        fail_msg: "No valuation entries returned by Wealthfolio API."
+
+    # check semplice ma utile: le prime 10 coppie devono essere non-decrescenti
+    - name: Assert API order is old->new (ascending) on first 10 items
+      ansible.builtin.assert:
+        that:
+          - >
+            {{
+              (valuations | length < 2)
+              or
+              (
+                (valuations[:10] | map(attribute='valuationDate') | list)
+                ==
+                ((valuations[:10] | map(attribute='valuationDate') | list) | sort)
+              )
+            }}
+        fail_msg: "API order is not ascending (old->new) in the first 10 entries."
+
+    - name: Write valuations to temp json
+      ansible.builtin.copy:
+        dest: "{{ vals_path }}"
+        mode: "0600"
+        content: "{{ valuations | to_nice_json }}"
+      no_log: true
+
+    - name: Generate CSV (old->new) using Unrealized P/L = investmentMarketValue - costBasis
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - << 'PY'
+        import json
+        from decimal import Decimal, ROUND_HALF_UP
+    
+        in_path = "{{ vals_path }}"
+        out_path = "{{ out_csv }}"
+        invert = {{ invert_amount_sign | bool | ternary('True', 'False') }}
+    
+        with open(in_path, "r", encoding="utf-8") as f:
+            vals = json.load(f)
+    
+        def d(x):
+            return Decimal(str(x))
+    
+        def q2(x: Decimal) -> str:
+            return str(x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    
+        header = "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
+        opp = "Investment"
+        desc = "Investment Adjusted PL"
+    
+        lines = [header]
+        prev_u = None
+    
+        for v in vals[:-1]:
+            date = (v.get("valuationDate","") or "")[:10]
+    
+            imv = d(v.get("investmentMarketValue", 0))
+            cb  = d(v.get("costBasis", 0))
+            u = imv - cb  # unrealized P/L
+    
+            if prev_u is None:
+                adj = Decimal("0.00")
+            else:
+                adj = u - prev_u
+            prev_u = u
+    
+            if invert:
+                adj = -adj
+    
+            lines.append(f"{date},{q2(adj)},{opp},{desc}")
+    
+        with open(out_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        PY
+      args:
+        executable: /bin/bash
+      no_log: true
+
+    - name: Write Firefly importer config JSON (static)
+      ansible.builtin.copy:
+        dest: "{{ out_json }}"
+        mode: "0600"
+        content: |
+          {
+              "version": 3,
+              "source": "ff3-importer-1.7.8",
+              "created_at": "2026-02-03T18:46:59+01:00",
+              "date": "Y-m-d",
+              "default_account": 25,
+              "delimiter": "comma",
+              "headers": true,
+              "rules": false,
+              "skip_form": false,
+              "add_import_tag": false,
+              "roles": [
+                  "date_transaction",
+                  "amount",
+                  "opposing-name",
+                  "description"
+              ],
+              "do_mapping": [
+                  false,
+                  false,
+                  false,
+                  false
+              ],
+              "mapping": [],
+              "duplicate_detection_method": "classic",
+              "ignore_duplicate_lines": false,
+              "unique_column_index": 0,
+              "unique_column_type": "internal_reference",
+              "flow": "file",
+              "content_type": "csv",
+              "custom_tag": "",
+              "identifier": "0",
+              "connection": "0",
+              "ignore_spectre_categories": false,
+              "grouped_transaction_handling": "",
+              "use_entire_opposing_address": false,
+              "map_all_data": false,
+              "pending_transactions": true,
+              "access_token": "",
+              "accounts": [],
+              "new_account": [],
+              "date_range": "",
+              "date_range_number": 30,
+              "date_range_unit": "d",
+              "date_not_before": "",
+              "date_not_after": "",
+              "nordigen_country": "",
+              "nordigen_bank": "",
+              "nordigen_requisitions": [],
+              "nordigen_max_days": "90",
+              "conversion": false,
+              "ignore_duplicate_transactions": false
+          }
+
+    - name: Upload CSV+JSON to Firefly Importer (curl)
+      ansible.builtin.command: >
+        curl --silent --show-error --fail
+        --location --request POST
+        "{{ firefly_importer_base_url }}/autoupload?secret={{ firefly_importer_secret }}"
+        --header "Accept: application/json"
+        --header "Authorization: Bearer {{ firefly_access_token }}"
+        --form "importable=@{{ out_csv }}"
+        --form "json=@{{ out_json }}"
+      register: ff_upload
+      no_log: true
+
+    - name: Show results (non-sensitive)
+      ansible.builtin.debug:
+        msg:
+          - "CSV generated: {{ out_csv }}"
+          - "JSON generated: {{ out_json }}"
+          - "API order assumed: old->new (ascending)"
+          - "invert_amount_sign: {{ invert_amount_sign }}"
+          - "Firefly importer upload OK (curl exit 0)."
