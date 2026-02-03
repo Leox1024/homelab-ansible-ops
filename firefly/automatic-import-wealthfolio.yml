@@ -75,12 +75,20 @@
         csv_rows: "{{ csv_rows | default([]) + [
           {
             'valuation_date': item.valuationDate,
-            'adjusted': '%.2f' | format(adjusted_val | float),
+            'adjusted': '%.2f' | format(
+                (
+                  ( (item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) - 
+                    (item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) )
+                  - 
+                  ( ( (valuations_sorted[idx - 1].investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) - 
+                      (valuations_sorted[idx - 1].costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) ) 
+                    if idx > 0 else 0.0 )
+                ) | float
+            ),
             'opposing': 'Investment',
             'description': 'Investment Adjusted PL'
           }
         ] }}"
-      # Assicuriamoci che il loop segua l'ordine cronologico corretto
       loop: "{{ valuations_sorted }}"
       loop_control:
         index_var: idx
