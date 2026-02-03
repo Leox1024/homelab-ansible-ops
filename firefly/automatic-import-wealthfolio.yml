@@ -131,7 +131,8 @@
         prev: "{{ valuations[item-1] }}"
         cur_date: "{{ (cur.valuationDate | default(''))[:10] }}"
         delta: "{{ ((cur.totalValue | default(0)) | float) - ((prev.totalValue | default(0)) | float) }}"
-        adjusted_num: "{{ invert_amount_sign | ternary((-1.0 * delta), delta) }}"
+        sign_factor: "{{ 1 - 2 * (invert_amount_sign | int) }}"
+        adjusted_num: "{{ delta * (sign_factor | float) }}"
         line: "{{ cur_date }},{{ '%.2f' | format(adjusted_num | float) }},{{ opposing_account_value }},{{ description_value }}"
       loop: "{{ range(1, valuations | length) | list }}"
       when: (valuations | length) > 1
