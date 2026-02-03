@@ -62,9 +62,13 @@
       register: wf_vals
       no_log: true
 
-    - name: Keep valuations as returned (assumed newest -> oldest, like your Excel)
+    - name: Normalize valuations list (support either plain list or {data: [...]})
       ansible.builtin.set_fact:
-        valuations: "{{ wf_vals.json | list }}"
+        valuations: >-
+          {{
+            (wf_vals.json.data if (wf_vals.json is mapping and 'data' in wf_vals.json) else wf_vals.json)
+            | list
+          }}
 
     - name: Build CSV rows (DATE, ADJUSTED, OPPOSING ACCOUNT, Description)
       ansible.builtin.set_fact:
