@@ -1,5 +1,5 @@
 ---
-- name: Export Wealthfolio adjusted PL and upload to Firefly Importer
+- name: Export Wealthfolio daily adjusted totalValue and upload to Firefly Importer
   hosts: localhost
   gather_facts: false
 
@@ -17,8 +17,7 @@
     out_json: "{{ output_dir }}/firefly_import_config.json"
 
   pre_tasks:
-    - name: Validate required env vars
-      ansible.builtin.assert:
+    - ansible.builtin.assert:
         that:
           - wealthfolio_base_url | length > 0
           - wealthfolio_password | length > 0
@@ -44,14 +43,14 @@
         return_content: true
         status_code: 200
       register: wf_login
-      no_log: false
+      no_log: true
 
     - name: Extract token
       ansible.builtin.set_fact:
         wf_access_token: "{{ wf_login.json.accessToken }}"
         wf_token_type: "{{ wf_login.json.tokenType | default('Bearer') }}"
 
-    - name: Fetch valuations history for account
+    - name: Fetch valuations history (API already ordered - keep as-is)
       ansible.builtin.uri:
         url: "{{ wealthfolio_base_url }}/api/v1/valuations/history?accountId={{ wealthfolio_account_id }}"
         method: GET
@@ -61,57 +60,32 @@
         return_content: true
         status_code: 200
       register: wf_vals
-      no_log: false
+      no_log: true
 
-
-
-    - name: Build CSV rows (Valuation Date, Adjusted, Opposing Account, Description)
+    - name: Keep valuations as returned (assumed newest -> oldest, like your Excel)
       ansible.builtin.set_fact:
-        csv_rows: "{{ csv_rows | default([]) + [
-          {
-            'valuation_date': item.valuationDate,
-            'adjusted': '%.2f' | format(
-                (
-                  ( (item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) - 
-                    (item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) )
-                  - 
-                  ( ( (valuations_sorted[idx - 1].investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) - 
-                      (valuations_sorted[idx - 1].costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0)) ) 
-                    if idx > 0 else 0.0 )
-                ) | float
-            ),
-            'opposing': 'Investment',
-            'description': 'Investment Adjusted PL'
-          }
-        ] }}"
-      loop: "{{ wf_vals.json }}"
-      loop_control:
-        index_var: idx
+        valuations: "{{ wf_vals.json | list }}"
+
+    - name: Build CSV rows (DATE, ADJUSTED, OPPOSING ACCOUNT, Description)
+      ansible.builtin.set_fact:
+        csv_rows: "{{ csv_rows | default([]) + [ row_obj ] }}"
       vars:
-        # --- DATI CORRENTI (Oggi) ---
-        # Pulizia stringa -> Conversione Float -> Default 0
-        c_mv: "{{ item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) }}"
-        c_cb: "{{ item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) }}"
-        
-        # Profit/Loss di oggi: (Market Value - Cost Basis)
-        pl_curr: "{{ c_mv - c_cb }}"
+        cur: "{{ valuations[item] }}"
+        nxt: "{{ (item + 1 < (valuations | length)) | ternary(valuations[item+1], omit) }}"
 
-        # --- DATI PRECEDENTI (Ieri) ---
-        # Accediamo all'elemento precedente nella lista ordinata
-        p_item: "{{ valuations_sorted[idx - 1] if idx > 0 else none }}"
-        p_mv: "{{ p_item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) if p_item else 0.0 }}"
-        p_cb: "{{ p_item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | float(0.0) if p_item else 0.0 }}"
-        
-        # Profit/Loss di ieri
-        pl_prev: "{{ p_mv - p_cb }}"
+        # ADJUSTED = totalValue(cur) - totalValue(next) (because list is newest->oldest)
+        adjusted_raw: >-
+          {{
+            (item + 1 < (valuations | length))
+            | ternary((cur.totalValue | float) - (nxt.totalValue | float), 0.0)
+          }}
 
-        # --- CALCOLO DELTA (Adjusted) ---
-        # Se è il primo giorno (idx 0), l'adjusted è il PL totale accumulato.
-        # Dal secondo giorno in poi, è la differenza: (PL oggi - PL ieri).
-        adjusted_val: "{{ (pl_curr - pl_prev) if idx > 0 else pl_curr }}"
-
-
-
+        row_obj:
+          date: "{{ cur.valuationDate }}"
+          adjusted: "{{ '%.2f' | format(adjusted_raw) }}"
+          opposing: "Investment"
+          description: "Investment Adjusted PL"
+      loop: "{{ range(0, valuations | length) | list }}"
 
     - name: Write Firefly importer config JSON (static)
       ansible.builtin.copy:
@@ -178,7 +152,7 @@
         dest: "{{ out_csv }}"
         mode: "0600"
       vars:
-        csv_header: ["Valuation Date", "Adjusted", "Opposing Account", "Description"]
+        csv_header: ["DATE", "ADJUSTED", "OPPOSING ACCOUNT", "Description"]
         csv_rows_render: "{{ csv_rows }}"
 
     - name: Upload CSV+JSON to Firefly Importer (multipart)
@@ -203,7 +177,7 @@
       register: firefly_upload
       no_log: true
 
-    - name: Show upload response (non-sensitive)
+    - name: Show paths + status
       ansible.builtin.debug:
         msg:
           - "CSV generated: {{ out_csv }}"
