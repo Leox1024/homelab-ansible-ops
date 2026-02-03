@@ -126,11 +126,15 @@
       vars:
         cur: "{{ valuations[item] }}"
         has_next: "{{ (item + 1) < (valuations | length) }}"
-        cur_total: "{{ (cur.totalValue | default(0)) | float }}"
-        nxt_total: "{{ has_next | ternary(((valuations[item+1].totalValue | default(0)) | float), 0.0) }}"
-        adjusted_num: "{{ has_next | ternary((cur_total - nxt_total), 0.0) }}"
-        # date in API should already be YYYY-MM-DD; if not, truncate safely
         cur_date: "{{ (cur.valuationDate | default(''))[:10] }}"
+        adjusted_num: >-
+          {{
+            has_next
+            | ternary(
+                ((cur.totalValue | default(0)) | float) - ((valuations[item+1].totalValue | default(0)) | float),
+                0.0
+              )
+          }}
         line: "{{ cur_date }},{{ '%.2f' | format(adjusted_num | float) }},{{ opposing_account_value }},{{ description_value }}"
       loop: "{{ range(0, valuations | length) | list }}"
 
