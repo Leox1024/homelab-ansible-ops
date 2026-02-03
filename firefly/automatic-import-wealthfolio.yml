@@ -24,9 +24,8 @@
     opposing_account_value: "Investment"
     description_value: "Investment Adjusted PL"
 
-    # ==== Behavior toggles ====
-    # If true: fail if API doesn't look newest->oldest
-    enforce_api_order: "{{ (lookup('env', 'ENFORCE_API_ORDER') | default('false', true)) | bool }}"
+    # Se Firefly ti mostra il segno al contrario, metti true
+    invert_amount_sign: "{{ (lookup('env', 'INVERT_AMOUNT_SIGN') | default('false', true)) | bool }}"
 
   pre_tasks:
     - name: Validate required env vars
@@ -41,6 +40,12 @@
           Missing required env vars:
           WEALTHFOLIO_BASE_URL, WEALTHFOLIO_PASSWORD,
           FIREFLY_IMPORTER_BASE_URL, FIREFLY_IMPORTER_SECRET, FIREFLY_ACCESS_TOKEN
+
+    - name: Ensure output dir exists
+      ansible.builtin.file:
+        path: "{{ output_dir }}"
+        state: directory
+        mode: "0700"
 
   tasks:
     - name: Login to Wealthfolio and get access token
@@ -63,7 +68,7 @@
         wf_access_token: "{{ wf_login.json.accessToken }}"
         wf_token_type: "{{ wf_login.json.tokenType | default('Bearer') }}"
 
-    - name: Fetch valuations history
+    - name: Fetch valuations history (API order is assumed old->new)
       ansible.builtin.uri:
         url: "{{ wealthfolio_base_url }}/api/v1/valuations/history?accountId={{ wealthfolio_account_id }}"
         method: GET
@@ -102,51 +107,45 @@
           - valuations | length > 0
         fail_msg: "No valuation entries returned by Wealthfolio API."
 
-    # ---- Optional order check (newest->oldest) ----
-    - name: Detect likely order (newest->oldest) from first 2 items
-      ansible.builtin.set_fact:
-        api_newest_to_oldest: >-
-          {{
-            (valuations | length < 2)
-            or
-            ((valuations[0].valuationDate | default('')) >= (valuations[1].valuationDate | default('')))
-          }}
-
-    - name: Enforce API order if requested
+    # ---- Assert API order is ascending by date (old->new) ----
+    - name: Assert API order is old->new (ascending)
       ansible.builtin.assert:
         that:
-          - api_newest_to_oldest
-        fail_msg: "API order not newest->oldest; delta computation would be wrong."
-      when: enforce_api_order | bool
+          - valuations | length < 2 or (valuations[0].valuationDate | default('')) <= (valuations[1].valuationDate | default(''))
+        fail_msg: "API order is not ascending (old->new). Delta computation would be wrong."
 
-    # ---- Build CSV lines: Adjusted = totalValue[i] - totalValue[i+1] (newest->oldest) ----
-    - name: Build CSV rows
+    # ---- Build CSV lines (old->new): first row 0.00, then delta to previous day ----
+    - name: Init csv_lines
       ansible.builtin.set_fact:
-        csv_lines: "{{ (csv_lines | default([])) + [ line ] }}"
+        csv_lines: []
+
+    - name: First row (oldest day) adjusted=0.00
+      ansible.builtin.set_fact:
+        csv_lines: "{{ csv_lines + [ first_line ] }}"
+      vars:
+        first: "{{ valuations[0] }}"
+        first_date: "{{ (first.valuationDate | default(''))[:10] }}"
+        first_line: "{{ first_date }},0.00,{{ opposing_account_value }},{{ description_value }}"
+      when: (valuations | length) > 0
+
+    - name: Rows from second day onwards (old->new)
+      ansible.builtin.set_fact:
+        csv_lines: "{{ csv_lines + [ line ] }}"
       vars:
         cur: "{{ valuations[item] }}"
-        has_next: "{{ (item + 1) < (valuations | length) }}"
+        prev: "{{ valuations[item-1] }}"
         cur_date: "{{ (cur.valuationDate | default(''))[:10] }}"
-        adjusted_num: >-
-          {{
-            has_next
-            | ternary(
-                ((cur.totalValue | default(0)) | float) - ((valuations[item+1].totalValue | default(0)) | float),
-                0.0
-              )
-          }}
+        delta: "{{ ((cur.totalValue | default(0)) | float) - ((prev.totalValue | default(0)) | float) }}"
+        adjusted_num: "{{ invert_amount_sign | ternary((-1.0 * delta), delta) }}"
         line: "{{ cur_date }},{{ '%.2f' | format(adjusted_num | float) }},{{ opposing_account_value }},{{ description_value }}"
-      loop: "{{ range(0, valuations | length) | list }}"
+      loop: "{{ range(1, valuations | length) | list }}"
+      when: (valuations | length) > 1
 
-    - name: Write CSV file
+    - name: Write CSV file (deterministic)
       ansible.builtin.copy:
         dest: "{{ out_csv }}"
         mode: "0600"
-        content: |
-          {{ csv_header }}
-          {% for l in csv_lines %}
-          {{ l }}
-          {% endfor %}
+        content: "{{ csv_header ~ '\n' ~ (csv_lines | join('\n')) ~ '\n' }}"
 
     # ---- Firefly importer JSON config (static) ----
     - name: Write Firefly importer config JSON (static)
@@ -208,7 +207,7 @@
               "ignore_duplicate_transactions": false
           }
 
-    # ---- Upload via curl: more reliable than uri multipart ----
+    # ---- Upload via curl ----
     - name: Upload CSV+JSON to Firefly Importer (curl)
       ansible.builtin.command: >
         curl --silent --show-error --fail
@@ -219,11 +218,13 @@
         --form "importable=@{{ out_csv }}"
         --form "json=@{{ out_json }}"
       register: ff_upload
+      no_log: true
 
     - name: Show results (non-sensitive)
       ansible.builtin.debug:
         msg:
           - "CSV generated: {{ out_csv }}"
           - "JSON generated: {{ out_json }}"
-          - "API newest->oldest detected: {{ api_newest_to_oldest }}"
+          - "API order assumed: old->new (ascending)"
+          - "invert_amount_sign: {{ invert_amount_sign }}"
           - "Firefly importer upload OK (curl exit 0)."
