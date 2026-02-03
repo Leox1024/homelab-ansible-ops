@@ -74,15 +74,23 @@
         item_idx: "{{ item }}"
         current: "{{ valuations_sorted[item_idx] }}"
         prev: "{{ valuations_sorted[item_idx - 1] if (item_idx | int > 0) else {'investmentMarketValue': '0', 'costBasis': '0'} }}"
-        pl_curr: "{{ (current.investmentMarketValue | float) - (current.costBasis | float) }}"
-        pl_prev: "{{ (prev.investmentMarketValue | float) - (prev.costBasis | float) }}"
-        adjusted: "{{ (pl_curr - pl_prev) if (item_idx | int > 0) else pl_curr }}"
+        
+        curr_mv_clean: "{{ current.investmentMarketValue | replace(',', '.') | float }}"
+        curr_cb_clean: "{{ current.costBasis | replace(',', '.') | float }}"
+        prev_mv_clean: "{{ prev.investmentMarketValue | replace(',', '.') | float }}"
+        prev_cb_clean: "{{ prev.costBasis | replace(',', '.') | float }}"
+        
+        pl_curr: "{{ curr_mv_clean - curr_cb_clean }}"
+        pl_prev: "{{ prev_mv_clean - prev_cb_clean }}"
+        adjusted: "{{ pl_curr - pl_prev if (item_idx | int > 0) else pl_curr }}"
+        
         row_obj:
           valuation_date: "{{ current.valuationDate }}"
-          adjusted: "{{ '%.2f' | format(adjusted) }}"
+          adjusted: "{{ '%.2f' | format(adjusted | float) }}"
           opposing: "Investment"
           description: "Investment Adjusted PL"
       loop: "{{ range(0, (valuations_sorted | length)) | list }}"
+
 
     - name: Write Firefly importer config JSON (static)
       ansible.builtin.copy:
