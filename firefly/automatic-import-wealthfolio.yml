@@ -62,31 +62,30 @@
       register: wf_vals
       no_log: true
 
-    - name: Normalize valuations list (support either plain list or {data: [...]})
+    - name: Normalize valuations list
       ansible.builtin.set_fact:
         valuations: >-
           {{
             (wf_vals.json.data if (wf_vals.json is mapping and 'data' in wf_vals.json) else wf_vals.json)
             | list
           }}
+    
+    - name: Keep only valid valuation objects
+      ansible.builtin.set_fact:
+        valuations: "{{ valuations | select('mapping') | list }}"
 
     - name: Build CSV rows (DATE, ADJUSTED, OPPOSING ACCOUNT, Description)
       ansible.builtin.set_fact:
-        csv_rows: "{{ csv_rows | default([]) + [ row_obj ] }}"
+        csv_rows: "{{ (csv_rows | default([])) + [ row_obj ] }}"
       vars:
         cur: "{{ valuations[item] }}"
-        nxt: "{{ (item + 1 < (valuations | length)) | ternary(valuations[item+1], omit) }}"
-
-        # ADJUSTED = totalValue(cur) - totalValue(next) (because list is newest->oldest)
-        adjusted_raw: >-
-          {{
-            (item + 1 < (valuations | length))
-            | ternary((cur.totalValue | float) - (nxt.totalValue | float), 0.0)
-          }}
-
+        has_next: "{{ (item + 1) < (valuations | length) }}"
+        cur_total: "{{ (cur.totalValue | default(0) ) | float }}"
+        nxt_total: "{{ has_next | ternary(((valuations[item+1].totalValue | default(0)) | float), 0.0) }}"
+        adjusted_num: "{{ has_next | ternary((cur_total - nxt_total), 0.0) }}"
         row_obj:
           date: "{{ cur.valuationDate }}"
-          adjusted: "{{ '%.2f' | format(adjusted_raw | float) }}"
+          adjusted: "{{ '%.2f' | format(adjusted_num | float) }}"
           opposing: "Investment"
           description: "Investment Adjusted PL"
       loop: "{{ range(0, valuations | length) | list }}"
