@@ -69,32 +69,33 @@
 
     - name: Build CSV rows (Valuation Date, Adjusted, Opposing Account, Description)
       ansible.builtin.set_fact:
-        csv_rows: "{{ csv_rows | default([]) + [row_obj] }}"
+        csv_rows: "{{ csv_rows | default([]) + [
+          {
+            'valuation_date': item.valuationDate,
+            'adjusted': '%.2f' | format(adjusted_val | float),
+            'opposing': 'Investment',
+            'description': 'Investment Adjusted PL'
+          }
+        ] }}"
       loop: "{{ valuations_sorted }}"
       loop_control:
         index_var: idx
       vars:
-        # 1. Pulizia dei dati: forziamo la conversione in float e gestiamo i valori nulli/mancanti
-        curr_mv: "{{ (item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '')) | float(0.0) }}"
-        curr_cb: "{{ (item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '')) | float(0.0) }}"
+        # Estraiamo e puliamo i valori correnti
+        c_mv: "{{ item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) }}"
+        c_cb: "{{ item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) }}"
         
-        # 2. Recupero dati precedenti con fallback sicuro
-        prev_item: "{{ valuations_sorted[idx - 1] if idx > 0 else {} }}"
-        prev_mv: "{{ (prev_item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '')) | float(0.0) }}"
-        prev_cb: "{{ (prev_item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '')) | float(0.0) }}"
+        # Estraiamo e puliamo i valori precedenti
+        p_item: "{{ valuations_sorted[idx - 1] if idx > 0 else none }}"
+        p_mv: "{{ p_item.investmentMarketValue | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) if p_item else '0' }}"
+        p_cb: "{{ p_item.costBasis | default(0) | string | regex_replace('[^0-9.\\-]', '') | default('0', true) if p_item else '0' }}"
 
-        # 3. Calcolo PL (Market - Cost)
-        pl_curr: "{{ curr_mv - curr_cb }}"
-        pl_prev: "{{ prev_mv - prev_cb }}"
+        # Eseguiamo i calcoli forzando il float ad ogni passo
+        pl_curr: "{{ (c_mv | float) - (c_cb | float) }}"
+        pl_prev: "{{ (p_mv | float) - (p_cb | float) }}"
         
-        # 4. Calcolo Delta
-        adjusted_val: "{{ (pl_curr - pl_prev) if idx > 0 else pl_curr }}"
-
-        row_obj:
-          valuation_date: "{{ item.valuationDate }}"
-          adjusted: "{{ '%.2f' | format(adjusted_val | float) }}"
-          opposing: "Investment"
-          description: "Investment Adjusted PL"
+        # Risultato finale
+        adjusted_val: "{{ (pl_curr | float - pl_prev | float) if idx > 0 else pl_curr | float }}"
 
 
     - name: Write Firefly importer config JSON (static)
