@@ -4,6 +4,7 @@
   gather_facts: false
 
   vars:
+    # ==== ENV-driven config (Semaphore-friendly) ====
     wealthfolio_base_url: "{{ lookup('env', 'WEALTHFOLIO_BASE_URL') | default('', true) }}"
     wealthfolio_password: "{{ lookup('env', 'WEALTHFOLIO_PASSWORD') | default('', true) }}"
     wealthfolio_account_id: "{{ lookup('env', 'WEALTHFOLIO_ACCOUNT_ID') | default('TOTAL', true) }}"
@@ -13,11 +14,23 @@
     firefly_access_token: "{{ lookup('env', 'FIREFLY_ACCESS_TOKEN') | default('', true) }}"
 
     output_dir: "{{ lookup('env', 'OUTPUT_DIR') | default('/tmp', true) }}"
+
+    # ==== Output files ====
     out_csv: "{{ output_dir }}/wealthfolio_adjusted_pl_{{ wealthfolio_account_id }}.csv"
     out_json: "{{ output_dir }}/firefly_import_config.json"
 
+    # ==== CSV constants ====
+    csv_header: "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
+    opposing_account_value: "Investment"
+    description_value: "Investment Adjusted PL"
+
+    # ==== Behavior toggles ====
+    # If true: fail if API doesn't look newest->oldest
+    enforce_api_order: "{{ (lookup('env', 'ENFORCE_API_ORDER') | default('false', true)) | bool }}"
+
   pre_tasks:
-    - ansible.builtin.assert:
+    - name: Validate required env vars
+      ansible.builtin.assert:
         that:
           - wealthfolio_base_url | length > 0
           - wealthfolio_password | length > 0
@@ -25,9 +38,15 @@
           - firefly_importer_secret | length > 0
           - firefly_access_token | length > 0
         fail_msg: >
-          Missing required env vars. Need:
+          Missing required env vars:
           WEALTHFOLIO_BASE_URL, WEALTHFOLIO_PASSWORD,
           FIREFLY_IMPORTER_BASE_URL, FIREFLY_IMPORTER_SECRET, FIREFLY_ACCESS_TOKEN
+
+    - name: Ensure output dir exists
+      ansible.builtin.file:
+        path: "{{ output_dir }}"
+        state: directory
+        mode: "0700"
 
   tasks:
     - name: Login to Wealthfolio and get access token
@@ -50,7 +69,7 @@
         wf_access_token: "{{ wf_login.json.accessToken }}"
         wf_token_type: "{{ wf_login.json.tokenType | default('Bearer') }}"
 
-    - name: Fetch valuations history (API already ordered - keep as-is)
+    - name: Fetch valuations history
       ansible.builtin.uri:
         url: "{{ wealthfolio_base_url }}/api/v1/valuations/history?accountId={{ wealthfolio_account_id }}"
         method: GET
@@ -62,34 +81,76 @@
       register: wf_vals
       no_log: true
 
-    - name: Normalize valuations list
+    # ---- Normalize schema: list vs {data:[...]} ----
+    - name: Normalize valuations list from API response
       ansible.builtin.set_fact:
-        valuations: >-
+        valuations_raw: >-
           {{
             (wf_vals.json.data if (wf_vals.json is mapping and 'data' in wf_vals.json) else wf_vals.json)
+            | default([])
             | list
           }}
-    
-    - name: Keep only valid valuation objects
-      ansible.builtin.set_fact:
-        valuations: "{{ valuations | select('mapping') | list }}"
 
-    - name: Build CSV rows (DATE, ADJUSTED, OPPOSING ACCOUNT, Description)
+    - name: Filter only mapping entries (drop garbage rows)
       ansible.builtin.set_fact:
-        csv_rows: "{{ (csv_rows | default([])) + [ row_obj ] }}"
+        valuations: "{{ valuations_raw | select('mapping') | list }}"
+
+    - name: Report counts (non-sensitive)
+      ansible.builtin.debug:
+        msg:
+          - "Valuations raw count: {{ valuations_raw | length }}"
+          - "Valuations valid count: {{ valuations | length }}"
+          - "Dropped entries: {{ (valuations_raw | length) - (valuations | length) }}"
+
+    - name: Fail if no valuation entries
+      ansible.builtin.assert:
+        that:
+          - valuations | length > 0
+        fail_msg: "No valuation entries returned by Wealthfolio API."
+
+    # ---- Optional order check (newest->oldest) ----
+    - name: Detect likely order (newest->oldest) from first 2 items
+      ansible.builtin.set_fact:
+        api_newest_to_oldest: >-
+          {{
+            (valuations | length < 2)
+            or
+            ((valuations[0].valuationDate | default('')) >= (valuations[1].valuationDate | default('')))
+          }}
+
+    - name: Enforce API order if requested
+      ansible.builtin.assert:
+        that:
+          - api_newest_to_oldest
+        fail_msg: "API order not newest->oldest; delta computation would be wrong."
+      when: enforce_api_order | bool
+
+    # ---- Build CSV lines: Adjusted = totalValue[i] - totalValue[i+1] (newest->oldest) ----
+    - name: Build CSV rows
+      ansible.builtin.set_fact:
+        csv_lines: "{{ (csv_lines | default([])) + [ line ] }}"
       vars:
         cur: "{{ valuations[item] }}"
         has_next: "{{ (item + 1) < (valuations | length) }}"
-        cur_total: "{{ (cur.totalValue | default(0) ) | float }}"
+        cur_total: "{{ (cur.totalValue | default(0)) | float }}"
         nxt_total: "{{ has_next | ternary(((valuations[item+1].totalValue | default(0)) | float), 0.0) }}"
         adjusted_num: "{{ has_next | ternary((cur_total - nxt_total), 0.0) }}"
-        row_obj:
-          date: "{{ cur.valuationDate }}"
-          adjusted: "{{ '%.2f' | format(adjusted_num | float) }}"
-          opposing: "Investment"
-          description: "Investment Adjusted PL"
+        # date in API should already be YYYY-MM-DD; if not, truncate safely
+        cur_date: "{{ (cur.valuationDate | default(''))[:10] }}"
+        line: "{{ cur_date }},{{ '%.2f' | format(adjusted_num | float) }},{{ opposing_account_value }},{{ description_value }}"
       loop: "{{ range(0, valuations | length) | list }}"
 
+    - name: Write CSV file
+      ansible.builtin.copy:
+        dest: "{{ out_csv }}"
+        mode: "0600"
+        content: |
+          {{ csv_header }}
+          {% for l in csv_lines %}
+          {{ l }}
+          {% endfor %}
+
+    # ---- Firefly importer JSON config (static) ----
     - name: Write Firefly importer config JSON (static)
       ansible.builtin.copy:
         dest: "{{ out_json }}"
@@ -149,40 +210,23 @@
               "ignore_duplicate_transactions": false
           }
 
-    - name: Render CSV file
-      ansible.builtin.template:
-        src: "templates/wealthfolio_adjusted_pl.csv.j2"
-        dest: "{{ out_csv }}"
-        mode: "0600"
-      vars:
-        csv_header: ["DATE", "ADJUSTED", "OPPOSING ACCOUNT", "Description"]
-        csv_rows_render: "{{ csv_rows }}"
-
-    - name: Upload CSV+JSON to Firefly Importer (multipart)
-      ansible.builtin.uri:
-        url: "{{ firefly_importer_base_url }}/autoupload?secret={{ firefly_importer_secret }}"
-        method: POST
-        headers:
-          Accept: "application/json"
-          Authorization: "Bearer {{ firefly_access_token }}"
-        body_format: form-multipart
-        body:
-          importable:
-            filename: "{{ out_csv | basename }}"
-            mime_type: "text/csv"
-            content: "{{ lookup('file', out_csv) }}"
-          json:
-            filename: "{{ out_json | basename }}"
-            mime_type: "application/json"
-            content: "{{ lookup('file', out_json) }}"
-        status_code: [200, 201, 202]
-        return_content: true
-      register: firefly_upload
+    # ---- Upload via curl: more reliable than uri multipart ----
+    - name: Upload CSV+JSON to Firefly Importer (curl)
+      ansible.builtin.command: >
+        curl --silent --show-error --fail
+        --location --request POST
+        "{{ firefly_importer_base_url }}/autoupload?secret={{ firefly_importer_secret }}"
+        --header "Accept: application/json"
+        --header "Authorization: Bearer {{ firefly_access_token }}"
+        --form "importable=@{{ out_csv }}"
+        --form "json=@{{ out_json }}"
+      register: ff_upload
       no_log: true
 
-    - name: Show paths + status
+    - name: Show results (non-sensitive)
       ansible.builtin.debug:
         msg:
           - "CSV generated: {{ out_csv }}"
           - "JSON generated: {{ out_json }}"
-          - "Firefly importer status: {{ firefly_upload.status }}"
+          - "API newest->oldest detected: {{ api_newest_to_oldest }}"
+          - "Firefly importer upload OK (curl exit 0)."
