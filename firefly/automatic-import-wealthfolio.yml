@@ -4,7 +4,6 @@
   gather_facts: false
 
   vars:
-    # ==== ENV-driven config (Semaphore-friendly) ====
     wealthfolio_base_url: "{{ lookup('env', 'WEALTHFOLIO_BASE_URL') | default('', true) }}"
     wealthfolio_password: "{{ lookup('env', 'WEALTHFOLIO_PASSWORD') | default('', true) }}"
     wealthfolio_account_id: "{{ lookup('env', 'WEALTHFOLIO_ACCOUNT_ID') | default('TOTAL', true) }}"
@@ -15,16 +14,14 @@
 
     output_dir: "{{ lookup('env', 'OUTPUT_DIR') | default('/tmp', true) }}"
 
-    # ==== Output files ====
     out_csv: "{{ output_dir }}/wealthfolio_adjusted_pl_{{ wealthfolio_account_id }}.csv"
     out_json: "{{ output_dir }}/firefly_import_config.json"
+    vals_path: "{{ output_dir }}/wealthfolio_vals_{{ wealthfolio_account_id }}.json"
 
-    # ==== CSV constants ====
     csv_header: "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
     opposing_account_value: "Investment"
     description_value: "Investment Adjusted PL"
 
-    # Se Firefly ti mostra il segno al contrario, metti true
     invert_amount_sign: "{{ (lookup('env', 'INVERT_AMOUNT_SIGN') | default('false', true)) | bool }}"
 
   pre_tasks:
@@ -40,7 +37,6 @@
           Missing required env vars:
           WEALTHFOLIO_BASE_URL, WEALTHFOLIO_PASSWORD,
           FIREFLY_IMPORTER_BASE_URL, FIREFLY_IMPORTER_SECRET, FIREFLY_ACCESS_TOKEN
-
 
   tasks:
     - name: Login to Wealthfolio and get access token
@@ -75,7 +71,6 @@
       register: wf_vals
       no_log: true
 
-    # ---- Normalize schema: list vs {data:[...]} ----
     - name: Normalize valuations list from API response
       ansible.builtin.set_fact:
         valuations_raw: >-
@@ -84,14 +79,6 @@
             | default([])
             | list
           }}
-    
-    - name: Write valuations to temp json (non-sensitive-ish, but keep permissions strict)
-      ansible.builtin.copy:
-        dest: "{{ output_dir }}/wealthfolio_vals_{{ wealthfolio_account_id }}.json"
-        mode: "0600"
-        content: "{{ valuations | to_nice_json }}"
-      no_log: true
-    
 
     - name: Filter only mapping entries (drop garbage rows)
       ansible.builtin.set_fact:
@@ -110,42 +97,56 @@
           - valuations | length > 0
         fail_msg: "No valuation entries returned by Wealthfolio API."
 
-    # ---- Assert API order is ascending by date (old->new) ----
-    - name: Assert API order is old->new (ascending)
+    # check semplice ma utile: le prime 10 coppie devono essere non-decrescenti
+    - name: Assert API order is old->new (ascending) on first 10 items
       ansible.builtin.assert:
         that:
-          - valuations | length < 2 or (valuations[0].valuationDate | default('')) <= (valuations[1].valuationDate | default(''))
-        fail_msg: "API order is not ascending (old->new). Delta computation would be wrong."
+          - >
+            {{
+              (valuations | length < 2)
+              or
+              (
+                (valuations[:10] | map(attribute='valuationDate') | list)
+                ==
+                ((valuations[:10] | map(attribute='valuationDate') | list) | sort)
+              )
+            }}
+        fail_msg: "API order is not ascending (old->new) in the first 10 entries."
 
-    # ---- Build CSV lines (old->new): first row 0.00, then delta to previous day ----
-    - name: Generate CSV (old->new) with python3 (no Jinja arithmetic)
+    - name: Write valuations to temp json
+      ansible.builtin.copy:
+        dest: "{{ vals_path }}"
+        mode: "0600"
+        content: "{{ valuations | to_nice_json }}"
+      no_log: true
+
+    - name: Generate CSV (old->new) with python3
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - << 'PY'
         import json
         from decimal import Decimal, ROUND_HALF_UP
-    
-        in_path = "{{ output_dir }}/wealthfolio_vals_{{ wealthfolio_account_id }}.json"
+
+        in_path = "{{ vals_path }}"
         out_path = "{{ out_csv }}"
         invert = {{ invert_amount_sign | bool | lower }}
-    
+
         with open(in_path, "r", encoding="utf-8") as f:
             vals = json.load(f)
-    
-        # Expect list of dicts old->new
+
         def d(x):
             return Decimal(str(x))
-    
+
         def q2(x: Decimal) -> str:
             return str(x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    
+
         header = "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
         opp = "Investment"
         desc = "Investment Adjusted PL"
-    
+
         lines = [header]
-    
         prev_total = None
+
         for v in vals:
             date = (v.get("valuationDate","") or "")[:10]
             total = d(v.get("totalValue", 0))
@@ -154,12 +155,12 @@
             else:
                 adj = total - prev_total
             prev_total = total
-    
+
             if invert:
                 adj = -adj
-    
+
             lines.append(f"{date},{q2(adj)},{opp},{desc}")
-    
+
         with open(out_path, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
         PY
@@ -167,7 +168,6 @@
         executable: /bin/bash
       no_log: true
 
-    # ---- Firefly importer JSON config (static) ----
     - name: Write Firefly importer config JSON (static)
       ansible.builtin.copy:
         dest: "{{ out_json }}"
@@ -227,7 +227,6 @@
               "ignore_duplicate_transactions": false
           }
 
-    # ---- Upload via curl ----
     - name: Upload CSV+JSON to Firefly Importer (curl)
       ansible.builtin.command: >
         curl --silent --show-error --fail
