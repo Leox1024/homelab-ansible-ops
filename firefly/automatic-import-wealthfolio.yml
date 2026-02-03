@@ -147,7 +147,7 @@
         lines = [header]
         prev_u = None
     
-        for v in vals:
+        for v in vals[:-1]:
             date = (v.get("valuationDate","") or "")[:10]
     
             imv = d(v.get("investmentMarketValue", 0))
