@@ -63,11 +63,6 @@
       register: wf_vals
       no_log: false
 
-    - name: Sort valuations by date ascending
-      ansible.builtin.set_fact:
-        valuations_sorted: "{{ (wf_vals.json | list) | sort(attribute='valuationDate') }}"
-
-
 
 
     - name: Build CSV rows (Valuation Date, Adjusted, Opposing Account, Description)
@@ -89,7 +84,7 @@
             'description': 'Investment Adjusted PL'
           }
         ] }}"
-      loop: "{{ valuations_sorted }}"
+      loop: "{{ wf_vals.json }}"
       loop_control:
         index_var: idx
       vars:
