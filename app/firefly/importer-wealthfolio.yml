@@ -202,7 +202,7 @@
               ],
               "mapping": [],
               "duplicate_detection_method": "classic",
-              "ignore_duplicate_lines": false,
+              "ignore_duplicate_lines": true,
               "unique_column_index": 0,
               "unique_column_type": "internal_reference",
               "flow": "file",
