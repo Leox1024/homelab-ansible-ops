@@ -120,52 +120,57 @@
         content: "{{ valuations | to_nice_json }}"
       no_log: true
 
-    - name: Generate CSV (old->new) with python3
+    - name: Generate CSV (old->new) using Unrealized P/L = investmentMarketValue - costBasis
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - << 'PY'
         import json
         from decimal import Decimal, ROUND_HALF_UP
-
+    
         in_path = "{{ vals_path }}"
         out_path = "{{ out_csv }}"
         invert = {{ invert_amount_sign | bool | ternary('True', 'False') }}
-
+    
         with open(in_path, "r", encoding="utf-8") as f:
             vals = json.load(f)
-
+    
         def d(x):
             return Decimal(str(x))
-
+    
         def q2(x: Decimal) -> str:
             return str(x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-
+    
         header = "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
         opp = "Investment"
         desc = "Investment Adjusted PL"
-
+    
         lines = [header]
-        prev_total = None
-
+        prev_u = None
+    
         for v in vals:
             date = (v.get("valuationDate","") or "")[:10]
-            total = d(v.get("totalValue", 0))
-            if prev_total is None:
+    
+            imv = d(v.get("investmentMarketValue", 0))
+            cb  = d(v.get("costBasis", 0))
+            u = imv - cb  # unrealized P/L
+    
+            if prev_u is None:
                 adj = Decimal("0.00")
             else:
-                adj = total - prev_total
-            prev_total = total
-
+                adj = u - prev_u
+            prev_u = u
+    
             if invert:
                 adj = -adj
-
+    
             lines.append(f"{date},{q2(adj)},{opp},{desc}")
-
+    
         with open(out_path, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
         PY
       args:
         executable: /bin/bash
+      no_log: true
 
     - name: Write Firefly importer config JSON (static)
       ansible.builtin.copy:
