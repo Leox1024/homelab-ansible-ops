@@ -18,7 +18,7 @@
     out_json: "{{ output_dir }}/firefly_import_config.json"
     vals_path: "{{ output_dir }}/wealthfolio_vals_{{ wealthfolio_account_id }}.json"
 
-    csv_header: "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
+    csv_header: "DATE,ADJUSTED,OPPOSING ACCOUNT,Description,REF"
     opposing_account_value: "Investment"
     description_value: "Investment Adjusted PL"
 
@@ -97,7 +97,6 @@
           - valuations | length > 0
         fail_msg: "No valuation entries returned by Wealthfolio API."
 
-    # check semplice ma utile: le prime 10 coppie devono essere non-decrescenti
     - name: Assert API order is old->new (ascending) on first 10 items
       ansible.builtin.assert:
         that:
@@ -130,6 +129,7 @@
         in_path = "{{ vals_path }}"
         out_path = "{{ out_csv }}"
         invert = {{ invert_amount_sign | bool | ternary('True', 'False') }}
+        account = "{{ wealthfolio_account_id }}"
     
         with open(in_path, "r", encoding="utf-8") as f:
             vals = json.load(f)
@@ -140,7 +140,7 @@
         def q2(x: Decimal) -> str:
             return str(x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     
-        header = "DATE,ADJUSTED,OPPOSING ACCOUNT,Description"
+        header = "DATE,ADJUSTED,OPPOSING ACCOUNT,Description,REF"
         opp = "Investment"
         desc = "Investment Adjusted PL"
     
@@ -152,7 +152,7 @@
     
             imv = d(v.get("investmentMarketValue", 0))
             cb  = d(v.get("costBasis", 0))
-            u = imv - cb  # unrealized P/L
+            u = imv - cb
     
             if prev_u is None:
                 adj = Decimal("0.00")
@@ -163,7 +163,8 @@
             if invert:
                 adj = -adj
     
-            lines.append(f"{date},{q2(adj)},{opp},{desc}")
+            ref = f"WF_{account}_{date}"
+            lines.append(f"{date},{q2(adj)},{opp},{desc},{ref}")
     
         with open(out_path, "w", encoding="utf-8", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
@@ -192,18 +193,20 @@
                   "date_transaction",
                   "amount",
                   "opposing-name",
-                  "description"
+                  "description",
+                  "internal_reference"
               ],
               "do_mapping": [
+                  false,
                   false,
                   false,
                   false,
                   false
               ],
               "mapping": [],
-              "duplicate_detection_method": "classic",
+              "duplicate_detection_method": "cell",
               "ignore_duplicate_lines": true,
-              "unique_column_index": 0,
+              "unique_column_index": 4,
               "unique_column_type": "internal_reference",
               "flow": "file",
               "content_type": "csv",
