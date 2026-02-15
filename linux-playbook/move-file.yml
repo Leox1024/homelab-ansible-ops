@@ -7,6 +7,7 @@
   vars:
     src_path: "/source/example/test.txt"
     dest_path: "/dest/example/test.txt"
+    custom_cmd: ""
 
   tasks:
 
@@ -16,3 +17,7 @@
       args:
         removes: "{{ src_path }}"
       changed_when: true
+
+  - name: Run custom command (optional)
+      ansible.builtin.command: "{{ custom_cmd }}"
+      when: custom_cmd | length > 0
