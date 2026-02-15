@@ -1,0 +1,18 @@
+- name: mv file from src to dest (as root)
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  vars:
+    src_path: "/source/example/test.txt"
+    dest_path: "/dest/example/test.txt"
+
+  tasks:
+
+    - name: Move (rename) file
+      ansible.builtin.command: >
+        mv -f -- "{{ src_path }}" "{{ dest_path }}"
+      args:
+        removes: "{{ src_path }}"
+      changed_when: true
