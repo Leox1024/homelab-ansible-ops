@@ -51,7 +51,7 @@
           password: "{{ wealthfolio_password }}"
         return_content: true
         status_code: 200
-      register: wf_login
+      register: wf_session
       no_log: true
 
     - name: Extract token
