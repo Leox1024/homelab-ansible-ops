@@ -56,8 +56,8 @@
 
     - name: Extract token
       ansible.builtin.set_fact:
-        wf_access_token: "{{ wf_login.json.set-cookie }}"
-        wf_token_type: "{{ wf_login.json.set-cookie | default('Bearer') }}"
+        wf_access_token: "{{ wf_login.cookies.wf_session }}"
+        wf_token_type: "Bearer"
 
     - name: Fetch valuations history (API order is assumed old->new)
       ansible.builtin.uri:
