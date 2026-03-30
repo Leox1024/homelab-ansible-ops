@@ -51,13 +51,13 @@
           password: "{{ wealthfolio_password }}"
         return_content: true
         status_code: 200
-      register: wf_session
+      register: wf_login
       no_log: true
 
     - name: Extract token
       ansible.builtin.set_fact:
-        wf_access_token: "{{ wf_session.json.accessToken }}"
-        wf_token_type: "{{ wf_session.json.tokenType | default('Bearer') }}"
+        wf_access_token: "{{ wf_login.json.wf_session }}"
+        wf_token_type: "{{ wf_login.json.tokenType | default('Bearer') }}"
 
     - name: Fetch valuations history (API order is assumed old->new)
       ansible.builtin.uri:
