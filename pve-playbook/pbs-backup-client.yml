@@ -1,8 +1,7 @@
-# this playbook is used to backup important file of proxmox host
+# basic non-root backup for Proxmox hosts
 
-- name: Run PBS file-level backup
+- name: Run PBS basic file-level backup
   hosts: all
-  become: yes
   gather_facts: no
 
   vars:
@@ -11,25 +10,20 @@
     pbs_username: "root@pam!hosts-backup"
     pbs_secret: "{{ vault_pbs_secret }}"
     pbs_fingerprint: "11:22:33:44:55...."
-    backup_dir: "/etc"
 
   tasks:
-    - name: register fingerprint TLS localy
-      lineinfile:
-        path: /root/.config/proxmox-backup/fingerprints
-        create: yes
-        owner: root
-        group: root
-        mode: '0600'
-        line: "{{ pbs_server }} {{ pbs_fingerprint }}"
-        regexp: "^{{ pbs_server }} "
-
-    - name: start backup
-      ansible.builtin.command: >
-        proxmox-backup-client backup
-        {{ (backup_dir | basename) }}.pxar:{{ backup_dir }}
-        --include-dev /boot/efi
+    - name: Start basic backup
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-client
+          - backup
+          - hosts.pxar:/etc/hosts
+          - hostname.pxar:/etc/hostname
+          - resolv.pxar:/etc/resolv.conf
+          - network.pxar:/etc/network
+          - apt-sources.pxar:/etc/apt/sources.list.d
       environment:
         PBS_REPOSITORY: "{{ pbs_username }}@{{ pbs_server }}:{{ pbs_datastore }}"
         PBS_PASSWORD: "{{ pbs_secret }}"
         PBS_FINGERPRINT: "{{ pbs_fingerprint }}"
+      no_log: true
