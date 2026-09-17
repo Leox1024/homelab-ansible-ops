@@ -1,8 +1,6 @@
-# basic non-root backup for Proxmox hosts
-
 - name: Run PBS basic file-level backup
   hosts: all
-  gather_facts: no
+  gather_facts: yes
 
   vars:
     pbs_server: "10.100.0.75"
@@ -11,17 +9,35 @@
     pbs_secret: "{{ vault_pbs_secret }}"
     pbs_fingerprint: "11:22:33:44:55...."
 
+    backup_staging_dir: "{{ ansible_env.HOME }}/host-backup"
+
+    backup_files:
+      - /etc/hosts
+      - /etc/hostname
+      - /etc/resolv.conf
+      - /etc/network/interfaces
+
   tasks:
-    - name: Start basic backup
+    - name: Create staging directory
+      ansible.builtin.file:
+        path: "{{ backup_staging_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Copy basic configuration files
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ backup_staging_dir }}/{{ item | basename }}"
+        remote_src: yes
+        mode: preserve
+      loop: "{{ backup_files }}"
+
+    - name: Backup staging directory to PBS
       ansible.builtin.command:
         argv:
           - proxmox-backup-client
           - backup
-          - hosts.pxar:/etc/hosts
-          - hostname.pxar:/etc/hostname
-          - resolv.pxar:/etc/resolv.conf
-          - network.pxar:/etc/network
-          - apt-sources.pxar:/etc/apt/sources.list.d
+          - "host-config.pxar:{{ backup_staging_dir }}"
       environment:
         PBS_REPOSITORY: "{{ pbs_username }}@{{ pbs_server }}:{{ pbs_datastore }}"
         PBS_PASSWORD: "{{ pbs_secret }}"
