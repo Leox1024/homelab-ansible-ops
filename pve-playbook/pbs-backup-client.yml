@@ -3,7 +3,7 @@
   gather_facts: yes
 
   vars:
-    pbs_server: "10.100.0.75"
+    pbs_server: "10.100.60.75"
     pbs_datastore: "hosts-backup"
     pbs_username: "root@pam!hosts-backup"
     pbs_secret: "{{ vault_pbs_secret }}"
