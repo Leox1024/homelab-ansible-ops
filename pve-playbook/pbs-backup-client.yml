@@ -26,4 +26,4 @@
         PBS_REPOSITORY: "{{ pbs_username }}@{{ pbs_server }}:{{ pbs_datastore }}"
         PBS_PASSWORD: "{{ pbs_secret }}"
         PBS_FINGERPRINT: "{{ pbs_fingerprint }}"
-      no_log: true
+      no_log: false
