@@ -1,8 +1,8 @@
 # homelab automation — Semaphore + Ansible
 
-Ansible playbooks that keep the homelab VMs, LXCs and services maintained. They run from
-[Semaphore UI](https://github.com/semaphoreui/semaphore) (`cfg-ansible`, project `homelab-ops`),
-which pulls this repository on every run.
+Ansible playbooks to maintain the VMs, LXCs and services of a small homelab.
+They are written to be run from [Semaphore UI](https://github.com/semaphoreui/semaphore),
+but work just as well with plain `ansible-playbook`.
 
 ## Layout
 
@@ -11,43 +11,41 @@ playbooks/
 ├── checkmk/     Checkmk local checks (files/ holds the check scripts)
 ├── docker/      Docker hosts maintenance
 ├── linux/       generic Debian/Ubuntu tasks (logs, SSH, cleanup, health check)
-├── network/     OPNsense and switch configuration backups
+├── network/     firewall and switch configuration backups
 ├── nextcloud/   Nextcloud maintenance and its TLS certificate
 └── proxmox/     Proxmox VE nodes
 extras/
 └── grafana-dashboards/   dashboard exports, not used by Ansible
 ```
 
-Every playbook targets `hosts: all`: the Semaphore inventory and the template's **Limit**
-decide where it runs. Defaults live in the playbook `vars`; anything specific to a run
-(paths, users, secrets) is set in a Semaphore **variable group**, never in this repository.
+| Playbook | What it does |
+|---|---|
+| `checkmk/deploy-local-check.yml` | deploys the `900_security_watch` Checkmk local check |
+| `docker/prune.yml` | prunes unused images, containers, networks and build cache (`docker_prune_volumes` for anonymous volumes) |
+| `linux/authorized-key.yml` | authorizes an SSH key for the automation user |
+| `linux/delete-path.yml` | deletes a file, a directory, or only its contents, refusing system paths |
+| `linux/journald-limit.yml` | caps the journal size and vacuums old logs |
+| `linux/ping.yml` | checks SSH login, Python and sudo |
+| `linux/ssh-pubkey-only.yml` | allows SSH public key authentication only |
+| `network/config-backup.yml` | backs up the OPNsense `config.xml` and a Brocade switch running-config |
+| `nextcloud/files-scan.yml` | rescans user files (`occ files:scan`) |
+| `nextcloud/letsencrypt-cloudflare.yml` | issues or renews a Let's Encrypt certificate with the Cloudflare DNS challenge |
+| `proxmox/pbs-host-backup.yml` | backs up basic node configuration files to Proxmox Backup Server |
 
-## Playbooks and Semaphore templates
+## Conventions
 
-| Playbook | Semaphore template | Inventory · limit | Schedule |
-|---|---|---|---|
-| `nextcloud/files-scan.yml` | app-nextcloud-scan-user | PRODVMS · svc-ncloud | every night 01:00 |
-| `nextcloud/letsencrypt-cloudflare.yml` | app-ncloud-ssl | PRODVMS · svc-ncloud | 28th of the month 10:00 |
-| `proxmox/pbs-host-backup.yml` | pbs-backup-client-pve | PVE-CLUSTER | every day 10:00 |
-| `docker/prune.yml` | app-docker-hard-clean-dev | PRODVMS · docker-dev | every night 02:30 |
-| `docker/prune.yml` | app-docker-hard-clean-prod | PRODVMS · docker-prod | every night 02:45 |
-| `linux/journald-limit.yml` | vms-log-cleanup-check-dkr | PRODVMS | 1st of the month 10:00 |
-| `network/config-backup.yml` | net-config-backup | NETWORK | every night 05:15 |
-| `linux/delete-path.yml` | app-delete-download-dir-dev | PRODVMS · docker-dev | manual |
-| `linux/ping.yml` | vms-ping, hyperv-ping | PRODVMS, PVE-CLUSTER | manual |
-| `linux/authorized-key.yml` | — | any | manual (onboarding) |
-| `linux/ssh-pubkey-only.yml` | — | any | manual (new VMs) |
-| `checkmk/deploy-local-check.yml` | — | any | manual |
+- Every playbook targets `hosts: all`: the inventory and `--limit` decide where it runs.
+- Defaults live in the playbook `vars`. Anything specific to an environment (addresses,
+  paths, users) goes in the inventory or in a Semaphore variable group, and secrets in
+  Semaphore secrets: never in this repository.
 
-## Access
+## Using it with Semaphore
 
-Semaphore logs in with its own SSH key (key store: `semaphore-ssh`), authorized for the
-`ansible` user on each managed host and restricted to connections from `cfg-ansible`.
-On OPNsense the same key can only run `cat /conf/config.xml`; on TrueNAS it maps to the
-`netbackup` user, which can only write to `spacecifs/ntw-backup`.
-
-To add a host: create the `ansible` user with passwordless sudo, authorize the Semaphore
-key (`linux/authorized-key.yml`, or by hand), add it to the inventory and run `vms-ping`.
+1. Add this repository under **Repositories**.
+2. Create the inventory and the SSH key in the **Key Store**.
+3. Create a variable group with the variables the playbook needs.
+4. Create a task template with the playbook path (e.g. `playbooks/docker/prune.yml`),
+   then run it manually or add a schedule.
 
 ## Checks
 
@@ -60,5 +58,5 @@ ansible-galaxy collection install -r requirements.yml
 ansible-lint
 ```
 
-The playbooks removed in the October 2026 cleanup (k8s, Wake-on-LAN, CPU frequency,
-time sync, Firefly importer, …) are still available at the `legacy-2026-10-27` tag.
+Older playbooks (k8s, Wake-on-LAN, CPU frequency, time sync, Firefly importer, …) are
+available at the `legacy-2026-10-27` tag.

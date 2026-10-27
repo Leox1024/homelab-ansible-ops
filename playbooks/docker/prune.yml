@@ -1,6 +1,5 @@
 ---
 # Removes stopped containers, unused networks, unused images and build cache.
-# Semaphore: app-docker-hard-clean-dev (volumes too), app-docker-hard-clean-prod.
 - name: Docker | prune unused data
   hosts: all
   gather_facts: false

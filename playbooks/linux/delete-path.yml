@@ -1,6 +1,5 @@
 ---
 # Deletes a file, a directory, or only the contents of a directory.
-# Semaphore: app-delete-download-dir-dev (path_var comes from the variable group).
 - name: Linux | delete a path
   hosts: all
   gather_facts: false

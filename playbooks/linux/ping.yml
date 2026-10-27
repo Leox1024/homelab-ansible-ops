@@ -1,9 +1,12 @@
 ---
 # Quick health check of an inventory: SSH login, Python and sudo.
-# Semaphore: vms-ping, hyperv-ping.
+# Set ping_check_sudo: false for hosts where the login user has no sudo.
 - name: Linux | check SSH, Python and sudo
   hosts: all
   gather_facts: false
+
+  vars:
+    ping_check_sudo: true
 
   tasks:
     - name: Reach the host over SSH
@@ -15,3 +18,4 @@
       register: ping_become
       changed_when: false
       failed_when: ping_become.stdout != 'root'
+      when: ping_check_sudo | bool

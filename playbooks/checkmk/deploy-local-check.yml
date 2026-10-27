@@ -1,7 +1,5 @@
 ---
 # Deploys the 900_security_watch Checkmk local check (files/900_security_watch).
-# Note: the hosts still run the December 2025 version; files/ holds the newer one
-# (September 2026), not deployed yet.
 - name: Checkmk | deploy security_watch local check
   hosts: all
   gather_facts: false
