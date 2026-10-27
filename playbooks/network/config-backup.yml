@@ -10,6 +10,10 @@
   hosts: opnsense
   gather_facts: false
 
+  vars:
+    # A key restricted with "restrict" gets no pty, and with -tt the command output is lost.
+    ansible_ssh_use_tty: false
+
   tasks:
     # Works with a key restricted to this command (authorized_keys command="...").
     - name: Read config.xml
