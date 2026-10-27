@@ -1,0 +1,26 @@
+---
+# Rescans Nextcloud user files so data added outside the web UI (SMB, NFS, rsync) shows up.
+# Semaphore: app-nextcloud-scan-user (every night).
+- name: Nextcloud | scan user files
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    # "all" scans every user (occ files:scan --all), anything else is a single user id.
+    nextcloud_user: all
+    nextcloud_path: /var/www/nextcloud
+    nextcloud_php_user: www-data
+
+  tasks:
+    - name: Run occ files:scan
+      ansible.builtin.command:
+        argv: >-
+          {{ ['runuser', '-u', nextcloud_php_user, '--', 'php', nextcloud_path ~ '/occ', 'files:scan']
+             + (['--all'] if nextcloud_user == 'all' else [nextcloud_user]) }}
+      register: nextcloud_scan
+      changed_when: false
+
+    - name: Show scan summary
+      ansible.builtin.debug:
+        msg: "{{ nextcloud_scan.stdout_lines[-6:] }}"

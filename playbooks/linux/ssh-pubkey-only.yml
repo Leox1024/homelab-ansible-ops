@@ -1,0 +1,36 @@
+---
+# Allows SSH logins with public keys only (no passwords, no keyboard-interactive).
+# Uses a drop-in that sorts first in sshd_config.d: sshd keeps the first value it reads,
+# so this also wins over 50-cloud-init.conf. Run it on new VMs before going to production.
+- name: Linux | SSH public key authentication only
+  hosts: all
+  gather_facts: false
+  become: true
+
+  handlers:
+    - name: Reload sshd
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: reloaded
+
+  tasks:
+    - name: Make sure sshd_config reads sshd_config.d
+      ansible.builtin.command: grep -Eq '^\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config
+      changed_when: false
+
+    - name: Install the pubkey-only drop-in
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-pubkey-only.conf
+        content: |
+          # Managed by Ansible (homelab-ansible-ops: playbooks/linux/ssh-pubkey-only.yml)
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitEmptyPasswords no
+          AuthenticationMethods publickey
+          PermitRootLogin prohibit-password
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reload sshd

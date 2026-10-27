@@ -1,0 +1,182 @@
+---
+# Backs up the OPNsense config.xml and the switch running-config to the spacecifs share
+# on TrueNAS: ntw-backup/<device>/<file> is always the latest copy, ntw-backup/<device>/history/
+# keeps a dated copy every time the content changes.
+# Semaphore: net-config-backup (daily), inventory NETWORK, variable group network-backup
+# (secret brocade_password: until it is set, the switch is skipped).
+
+- name: Network | read OPNsense config.xml
+  hosts: opnsense
+  gather_facts: false
+
+  tasks:
+    # On the firewall the Semaphore key is restricted to `cat /conf/config.xml`
+    # (forced command in root's authorized keys): whatever is sent, this is what runs.
+    - name: Read config.xml
+      ansible.builtin.raw: cat /conf/config.xml
+      register: opnsense_config
+      changed_when: false
+      no_log: true
+
+    - name: Check the config is complete
+      ansible.builtin.assert:
+        that:
+          - opnsense_config.stdout is match('<\?xml')
+          - opnsense_config.stdout is search('</opnsense>\s*$')
+        fail_msg: config.xml looks empty or truncated
+        quiet: true
+
+    - name: Queue config.xml for storage
+      ansible.builtin.set_fact:
+        network_backup:
+          device: "{{ inventory_hostname }}"
+          file: config.xml
+          content: "{{ opnsense_config.stdout }}"
+      no_log: true
+
+- name: Network | read switch running-config
+  hosts: switches
+  gather_facts: false
+
+  vars:
+    switch_password: "{{ brocade_password | default('') }}"
+
+  tasks:
+    - name: Skip the switch until its password is set
+      when: switch_password | length == 0
+      block:
+        - name: Explain why the switch is skipped
+          ansible.builtin.debug:
+            msg: Set the brocade_password secret in the network-backup variable group to back up {{ inventory_hostname }}
+
+        - name: Skip this switch
+          ansible.builtin.meta: end_host
+
+    - name: Download running-config
+      delegate_to: localhost
+      block:
+        - name: Create a temporary directory
+          ansible.builtin.tempfile:
+            state: directory
+          register: switch_tmp
+
+        - name: Pin the switch host key
+          ansible.builtin.copy:
+            dest: "{{ switch_tmp.path }}/known_hosts"
+            content: "{{ ansible_host }} {{ switch_host_key }}\n"
+            mode: "0600"
+
+        # FastIron 08.0.x: password only, legacy key exchange and legacy SCP protocol (-O).
+        - name: Copy runConfig over SCP
+          ansible.builtin.command:
+            argv:
+              - sshpass
+              - -e
+              - scp
+              - -O
+              - -o
+              - KexAlgorithms=+diffie-hellman-group1-sha1
+              - -o
+              - HostKeyAlgorithms=+ssh-rsa
+              - -o
+              - PubkeyAuthentication=no
+              - -o
+              - StrictHostKeyChecking=yes
+              - -o
+              - UserKnownHostsFile={{ switch_tmp.path }}/known_hosts
+              - "{{ ansible_user }}@{{ ansible_host }}:runConfig"
+              - "{{ switch_tmp.path }}/running-config.txt"
+          environment:
+            SSHPASS: "{{ switch_password }}"
+          changed_when: false
+
+        - name: Queue running-config for storage
+          ansible.builtin.set_fact:
+            network_backup:
+              device: "{{ inventory_hostname }}"
+              file: running-config.txt
+              content: "{{ lookup('ansible.builtin.file', switch_tmp.path ~ '/running-config.txt') }}"
+          no_log: true
+
+      always:
+        - name: Remove the temporary directory
+          ansible.builtin.file:
+            path: "{{ switch_tmp.path }}"
+            state: absent
+          when: switch_tmp.path is defined
+
+- name: Network | store backups on TrueNAS
+  hosts: backup_target
+  gather_facts: false
+
+  vars:
+    network_backup_dir: /mnt/hot-storage/spacecifs/ntw-backup
+    network_backup_owner: leox
+    network_backup_history_days: 365
+    network_backup_stamp: "{{ now(fmt='%Y-%m-%d_%H%M') }}"
+    network_backups: >-
+      {{ groups['all'] | map('extract', hostvars) | selectattr('network_backup', 'defined')
+         | map(attribute='network_backup') | list }}
+
+  tasks:
+    - name: Create the device directories
+      ansible.builtin.file:
+        path: "{{ network_backup_dir }}/{{ item.device }}/history"
+        state: directory
+        mode: "0770"
+      loop: "{{ network_backups }}"
+      loop_control:
+        label: "{{ item.device }}"
+
+    - name: Save the latest copy
+      ansible.builtin.copy:
+        dest: "{{ network_backup_dir }}/{{ item.device }}/{{ item.file }}"
+        content: "{{ item.content }}"
+        mode: "0660"
+      loop: "{{ network_backups }}"
+      register: network_backup_latest
+      no_log: true
+
+    - name: Keep a dated copy of what changed
+      ansible.builtin.copy:
+        src: "{{ item.dest }}"
+        dest: "{{ network_backup_dir }}/{{ item.item.device }}/history/{{ network_backup_stamp }}_{{ item.item.file }}"
+        remote_src: true
+        mode: "0660"
+      loop: "{{ network_backup_latest.results }}"
+      when: item.changed  # noqa: no-handler (one copy per changed item of a loop)
+      no_log: true
+
+    - name: Report what changed
+      ansible.builtin.debug:
+        msg: >-
+          {{ dict(network_backup_latest.results | map(attribute='item.device')
+                  | zip(network_backup_latest.results | map(attribute='changed'))) }}
+
+    # Files are created by the backup user: give the share owner access to them.
+    - name: Give the share owner access to the backups
+      ansible.builtin.command:
+        argv:
+          - setfacl
+          - -R
+          - -m
+          - u:{{ network_backup_owner }}:rwX,d:u:{{ network_backup_owner }}:rwX
+          - "{{ network_backup_dir }}/{{ item.device }}"
+      loop: "{{ network_backups }}"
+      loop_control:
+        label: "{{ item.device }}"
+      changed_when: false
+
+    - name: Find dated copies past retention
+      ansible.builtin.find:
+        paths: "{{ network_backups | map(attribute='device') | map('regex_replace', '^(.*)$', network_backup_dir ~ '/\\1/history') | list }}"
+        age: "{{ network_backup_history_days }}d"
+      register: network_backup_expired
+
+    - name: Delete dated copies past retention
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ network_backup_expired.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"

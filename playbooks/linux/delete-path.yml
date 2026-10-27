@@ -1,0 +1,49 @@
+---
+# Deletes a file, a directory, or only the contents of a directory.
+# Semaphore: app-delete-download-dir-dev (path_var comes from the variable group).
+- name: Linux | delete a path
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    # /path/file   -> deletes the file
+    # /path/dir    -> deletes the directory and everything in it
+    # /path/dir/*  -> empties the directory (hidden files excluded) and keeps it
+    path_var: ""
+    # Set to false only if you really mean to delete under a system path.
+    safety_checks: true
+    protected_paths: [/, /bin, /boot, /dev, /etc, /home, /lib, /lib64, /proc, /root, /sbin, /sys, /usr, /var]
+    delete_path_target: "{{ path_var | regex_replace('/\\*$', '') | regex_replace('/+$', '') | default('/', true) }}"
+
+  tasks:
+    - name: Refuse empty, relative or protected paths
+      ansible.builtin.assert:
+        that:
+          - path_var is match('/')
+          - not (safety_checks | bool) or delete_path_target not in protected_paths
+        fail_msg: "Refusing to delete '{{ path_var }}'"
+        quiet: true
+
+    - name: Empty the directory
+      when: path_var is search('/\*$')
+      block:
+        - name: Find directory contents
+          ansible.builtin.find:
+            paths: "{{ delete_path_target }}"
+            file_type: any
+          register: delete_path_contents
+
+        - name: Delete directory contents
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ delete_path_contents.files }}"
+          loop_control:
+            label: "{{ item.path }}"
+
+    - name: Delete the file or directory
+      ansible.builtin.file:
+        path: "{{ delete_path_target }}"
+        state: absent
+      when: path_var is not search('/\*$')

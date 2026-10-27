@@ -1,0 +1,62 @@
+---
+# Caps the systemd journal size and vacuums anything above the cap.
+# Semaphore: vms-log-cleanup-check-dkr (monthly).
+- name: Linux | cap journald disk usage
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    journald_system_max_use: 500M
+
+  handlers:
+    - name: Restart systemd-journald
+      ansible.builtin.systemd_service:
+        name: systemd-journald
+        state: restarted
+
+  tasks:
+    - name: Create journald drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Set the journal size cap
+      ansible.builtin.copy:
+        dest: /etc/systemd/journald.conf.d/50-size-limit.conf
+        content: |
+          # Managed by Ansible (homelab-ansible-ops: playbooks/linux/journald-limit.yml)
+          [Journal]
+          SystemMaxUse={{ journald_system_max_use }}
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart systemd-journald
+
+    # Older runs of this playbook wrote the value into journald.conf itself.
+    - name: Remove the old setting from journald.conf
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/journald.conf
+        regexp: '^SystemMaxUse='
+        state: absent
+      notify: Restart systemd-journald
+
+    - name: Apply the new cap before vacuuming
+      ansible.builtin.meta: flush_handlers
+
+    - name: Vacuum the journal down to the cap
+      ansible.builtin.command: journalctl --vacuum-size={{ journald_system_max_use }}
+      register: journald_vacuum
+      changed_when: journald_vacuum.stderr is search('freed [1-9]')
+
+    - name: Read current journal usage
+      ansible.builtin.command: journalctl --disk-usage
+      register: journald_usage
+      changed_when: false
+
+    - name: Show journal usage
+      ansible.builtin.debug:
+        msg: "{{ journald_usage.stdout }}"

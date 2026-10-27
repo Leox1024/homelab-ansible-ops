@@ -1,0 +1,25 @@
+---
+# Authorizes an SSH public key (e.g. the Semaphore key) for the user Ansible logs in as.
+# Useful to move an inventory from password to key authentication.
+- name: Linux | authorize an SSH key for the automation user
+  hosts: all
+  gather_facts: false
+
+  vars:
+    authorized_key_pubkey: ""
+    # authorized_keys options, e.g. from="10.100.50.90"
+    authorized_key_options: ""
+
+  tasks:
+    - name: Require a public key
+      ansible.builtin.assert:
+        that: authorized_key_pubkey | length > 0
+        fail_msg: Set authorized_key_pubkey in the variable group
+        quiet: true
+
+    - name: Authorize the key
+      ansible.posix.authorized_key:
+        user: "{{ ansible_user }}"
+        key: "{{ authorized_key_pubkey }}"
+        key_options: "{{ authorized_key_options | default(omit, true) }}"
+        state: present

@@ -1,0 +1,17 @@
+---
+# Quick health check of an inventory: SSH login, Python and sudo.
+# Semaphore: vms-ping, hyperv-ping.
+- name: Linux | check SSH, Python and sudo
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Reach the host over SSH
+      ansible.builtin.ping:
+
+    - name: Check sudo
+      ansible.builtin.command: id -un
+      become: true
+      register: ping_become
+      changed_when: false
+      failed_when: ping_become.stdout != 'root'
