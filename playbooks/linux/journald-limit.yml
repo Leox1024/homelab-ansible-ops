@@ -1,6 +1,5 @@
 ---
 # Caps the systemd journal size and vacuums anything above the cap.
-# Semaphore: vms-log-cleanup-check-dkr (monthly).
 - name: Linux | cap journald disk usage
   hosts: all
   gather_facts: false

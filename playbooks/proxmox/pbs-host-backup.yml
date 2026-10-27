@@ -1,78 +1,47 @@
 ---
-# Backs up the configuration of each Proxmox VE node to Proxmox Backup Server
-# (backup type "host", one group per node). Restore with proxmox-backup-client restore.
-# Semaphore: pbs-backup-client-pve (daily); pbs_secret and pbs_fingerprint come from
-# the hyperv-pbs-client-backup-pve variable group.
-- name: Proxmox VE | back up node configuration to PBS
+# Backs up the basic configuration files of each Proxmox VE node (hosts, hostname, DNS,
+# network) to Proxmox Backup Server, as a "host" backup. Runs without sudo on purpose:
+# only files readable by the login user are included.
+# Required variables: pbs_server, pbs_datastore, pbs_username, pbs_secret, pbs_fingerprint.
+- name: Proxmox VE | back up node configuration files to PBS
   hosts: all
-  gather_facts: false
+  gather_facts: true
 
   vars:
-    pbs_server: 10.100.60.75
-    pbs_datastore: hosts-backup
-    pbs_username: root@pam!hosts-backup
-    pbs_secret: "{{ vault_pbs_secret }}"
-    pbs_fingerprint: ""
-    pbs_environment:
-      PBS_REPOSITORY: "{{ pbs_username }}@{{ pbs_server }}:{{ pbs_datastore }}"
-      PBS_PASSWORD: "{{ pbs_secret }}"
-      PBS_FINGERPRINT: "{{ pbs_fingerprint }}"
-    # Used only when sudo is not available: the files readable without root.
-    pbs_fallback_dir: /home/{{ ansible_user }}/host-backup
-    pbs_fallback_files:
+    pbs_staging_dir: "{{ ansible_env.HOME }}/host-backup"
+    pbs_backup_files:
       - /etc/hosts
       - /etc/hostname
       - /etc/resolv.conf
       - /etc/network/interfaces
 
   tasks:
-    - name: Back up the node configuration
-      block:
-        # /etc/pve is the pmxcfs FUSE mount (VM/CT configs, storage.cfg, corosync, firewall):
-        # pxar does not cross mount points, so it has to be included explicitly.
-        - name: Back up /etc, including /etc/pve
-          ansible.builtin.command:
-            argv:
-              - proxmox-backup-client
-              - backup
-              - etc.pxar:/etc
-              - --include-dev
-              - /etc/pve
-          environment: "{{ pbs_environment }}"
-          become: true
-          register: pbs_backup
-          changed_when: true
+    - name: Create the staging directory
+      ansible.builtin.file:
+        path: "{{ pbs_staging_dir }}"
+        state: directory
+        mode: "0700"
 
-      rescue:
-        - name: Explain the fallback
-          ansible.builtin.debug:
-            msg: >-
-              Full /etc backup failed ({{ ansible_failed_result.msg | default('see above') }}):
-              falling back to the network files only. Check sudo for {{ ansible_user }}.
+    - name: Copy the configuration files
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ pbs_staging_dir }}/{{ item | basename }}"
+        remote_src: true
+        mode: preserve
+      loop: "{{ pbs_backup_files }}"
 
-        - name: Create the staging directory
-          ansible.builtin.file:
-            path: "{{ pbs_fallback_dir }}"
-            state: directory
-            mode: "0700"
-
-        - name: Stage the network files
-          ansible.builtin.copy:
-            src: "{{ item }}"
-            dest: "{{ pbs_fallback_dir }}/{{ item | basename }}"
-            remote_src: true
-            mode: preserve
-          loop: "{{ pbs_fallback_files }}"
-
-        - name: Back up the staged files
-          ansible.builtin.command:
-            argv:
-              - proxmox-backup-client
-              - backup
-              - host-config.pxar:{{ pbs_fallback_dir }}
-          environment: "{{ pbs_environment }}"
-          register: pbs_backup
-          changed_when: true
+    - name: Back up the staging directory to PBS
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-client
+          - backup
+          - host-config.pxar:{{ pbs_staging_dir }}
+      environment:
+        PBS_REPOSITORY: "{{ pbs_username }}@{{ pbs_server }}:{{ pbs_datastore }}"
+        PBS_PASSWORD: "{{ pbs_secret }}"
+        PBS_FINGERPRINT: "{{ pbs_fingerprint }}"
+      register: pbs_backup
+      changed_when: true
 
     - name: Show backup result
       ansible.builtin.debug:

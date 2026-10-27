@@ -7,7 +7,7 @@
 
   vars:
     authorized_key_pubkey: ""
-    # authorized_keys options, e.g. from="10.100.50.90"
+    # authorized_keys options, e.g. from="192.0.2.10"
     authorized_key_options: ""
 
   tasks:

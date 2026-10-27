@@ -1,6 +1,5 @@
 ---
 # Rescans Nextcloud user files so data added outside the web UI (SMB, NFS, rsync) shows up.
-# Semaphore: app-nextcloud-scan-user (every night).
 - name: Nextcloud | scan user files
   hosts: all
   gather_facts: false
