@@ -50,6 +50,12 @@
               Full /etc backup failed ({{ ansible_failed_result.msg | default('see above') }}):
               falling back to the network files only. Check sudo for {{ ansible_user }}.
 
+        - name: Create the staging directory
+          ansible.builtin.file:
+            path: "{{ pbs_fallback_dir }}"
+            state: directory
+            mode: "0700"
+
         - name: Stage the network files
           ansible.builtin.copy:
             src: "{{ item }}"
