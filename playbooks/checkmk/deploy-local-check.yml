@@ -1,0 +1,38 @@
+---
+# Deploys the 900_security_watch Checkmk local check (files/900_security_watch).
+# Note: the hosts still run the December 2025 version; files/ holds the newer one
+# (September 2026), not deployed yet.
+- name: Checkmk | deploy security_watch local check
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    local_check_src: 900_security_watch
+    local_check_dest: /usr/lib/check_mk_agent/local/900_security_watch
+    state_dir: /var/lib/check_mk_agent/security_watch
+
+  tasks:
+    - name: Create the local checks directory
+      ansible.builtin.file:
+        path: /usr/lib/check_mk_agent/local
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create the state directory
+      ansible.builtin.file:
+        path: "{{ state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Deploy the local check
+      ansible.builtin.copy:
+        src: "{{ local_check_src }}"
+        dest: "{{ local_check_dest }}"
+        owner: root
+        group: root
+        mode: "0755"

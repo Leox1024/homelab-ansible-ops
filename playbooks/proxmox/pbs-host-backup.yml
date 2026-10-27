@@ -1,0 +1,38 @@
+---
+# Backs up the configuration of each Proxmox VE node to Proxmox Backup Server
+# (backup type "host", one group per node). Restore with proxmox-backup-client restore.
+# Semaphore: pbs-backup-client-pve (daily); pbs_secret and pbs_fingerprint come from
+# the hyperv-pbs-client-backup-pve variable group.
+- name: Proxmox VE | back up node configuration to PBS
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    pbs_server: 10.100.60.75
+    pbs_datastore: hosts-backup
+    pbs_username: root@pam!hosts-backup
+    pbs_secret: "{{ vault_pbs_secret }}"
+    pbs_fingerprint: ""
+
+  tasks:
+    # /etc/pve is the pmxcfs FUSE mount (VM/CT configs, storage.cfg, corosync, firewall):
+    # pxar does not cross mount points, so it has to be included explicitly.
+    - name: Back up /etc, including /etc/pve
+      ansible.builtin.command:
+        argv:
+          - proxmox-backup-client
+          - backup
+          - etc.pxar:/etc
+          - --include-dev
+          - /etc/pve
+      environment:
+        PBS_REPOSITORY: "{{ pbs_username }}@{{ pbs_server }}:{{ pbs_datastore }}"
+        PBS_PASSWORD: "{{ pbs_secret }}"
+        PBS_FINGERPRINT: "{{ pbs_fingerprint }}"
+      register: pbs_backup
+      changed_when: true
+
+    - name: Show backup result
+      ansible.builtin.debug:
+        msg: "{{ pbs_backup.stderr_lines | select('search', 'Upload|Duration|End Time|snapshot') | list }}"

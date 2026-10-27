@@ -1,0 +1,7 @@
+---
+profile: production
+exclude_paths:
+  - extras/
+  # Runs the Nextcloud certificate renewal (app-ncloud-ssl): kept exactly as it is,
+  # lint fixes for it are only formatting (FQCN, task name casing).
+  - playbooks/nextcloud/letsencrypt-cloudflare.yml

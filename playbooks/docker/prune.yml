@@ -1,0 +1,25 @@
+---
+# Removes stopped containers, unused networks, unused images and build cache.
+# Semaphore: app-docker-hard-clean-dev (volumes too), app-docker-hard-clean-prod.
+- name: Docker | prune unused data
+  hosts: all
+  gather_facts: false
+  become: true
+
+  vars:
+    # Also prune unused anonymous volumes. Named volumes are never removed (Docker >= 23).
+    # Keep it off on production: a container removed by hand loses its anonymous volume.
+    docker_prune_volumes: false
+
+  tasks:
+    - name: Prune unused Docker data
+      ansible.builtin.command:
+        argv: >-
+          {{ ['docker', 'system', 'prune', '--all', '--force']
+             + (['--volumes'] if docker_prune_volumes | bool else []) }}
+      register: docker_prune
+      changed_when: docker_prune.stdout is not search('Total reclaimed space:\s+0B')
+
+    - name: Show reclaimed space
+      ansible.builtin.debug:
+        msg: "{{ docker_prune.stdout_lines | select('search', 'Total reclaimed space') | list }}"

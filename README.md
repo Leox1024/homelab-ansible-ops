@@ -1,46 +1,64 @@
-# homelab automation — semaphore + ansible
+# homelab automation — Semaphore + Ansible
 
-This repo contains Ansible playbooks for different **services/environments**, in order to automate and maintain vms/lxc, services and applications within a server-infrastructure/homelab.
-This repo works thanks to ansible, I prefered to integrate it with [Semaphore](https://github.com/ansible-semaphore/semaphore) in order to have a GUI.
+Ansible playbooks that keep the homelab VMs, LXCs and services maintained. They run from
+[Semaphore UI](https://github.com/semaphoreui/semaphore) (`cfg-ansible`, project `homelab-ops`),
+which pulls this repository on every run.
 
-<img width="1324" height="727" alt="image" src="https://github.com/user-attachments/assets/4b2c4996-834b-4200-8bb2-92a2f8c913c4" />
+## Layout
 
-## folder structure
 ```
-├── debian12-playbook/              # playbooks for base Debian 12 VM management
-├── k8s-playbook/                   # k8s maintenance and automation (WIP)
-├── docker-playbook/                # Docker host setup/container-updates/cleanup
-└── README.md
-```
-
-## requirements
-```
-- ansible installed
-- semaphore installed 
-```
-
-## how to use with semaphore
-```
-1. in semaphore GUI:
-   - add this repo in "Repositories" tab
-   - create a new Task Template -> Ansible playbook
-   - set the playbook path based on this repo (e.g. `debian12-playbook/apt-update.yml`)
-2. assign the correct inventory and repo and variable group (VG is used to overwrite default variable in playbook, so you have to create VG before creating this automation).
-3. run the task manually or schedule it.
+playbooks/
+├── checkmk/     Checkmk local checks (files/ holds the check scripts)
+├── docker/      Docker hosts maintenance
+├── linux/       generic Debian/Ubuntu tasks (logs, SSH, cleanup, health check)
+├── network/     OPNsense and switch configuration backups
+├── nextcloud/   Nextcloud maintenance and its TLS certificate
+└── proxmox/     Proxmox VE nodes
+extras/
+└── grafana-dashboards/   dashboard exports, not used by Ansible
 ```
 
-## targeting hosts in playbooks
+Every playbook targets `hosts: all`: the Semaphore inventory and the template's **Limit**
+decide where it runs. Defaults live in the playbook `vars`; anything specific to a run
+(paths, users, secrets) is set in a Semaphore **variable group**, never in this repository.
 
-all playbooks in this repo are written with:
+## Playbooks and Semaphore templates
 
-```yaml
-hosts: all
-```
+| Playbook | Semaphore template | Inventory · limit | Schedule |
+|---|---|---|---|
+| `nextcloud/files-scan.yml` | app-nextcloud-scan-user | PRODVMS · svc-ncloud | every night 01:00 |
+| `nextcloud/letsencrypt-cloudflare.yml` | app-ncloud-ssl | PRODVMS · svc-ncloud | 28th of the month 10:00 |
+| `proxmox/pbs-host-backup.yml` | pbs-backup-client-pve | PVE-CLUSTER | every day 10:00 |
+| `docker/prune.yml` | app-docker-hard-clean-dev | PRODVMS · docker-dev | every night 02:30 |
+| `docker/prune.yml` | app-docker-hard-clean-prod | PRODVMS · docker-prod | every night 02:45 |
+| `linux/journald-limit.yml` | vms-log-cleanup-check-dkr | PRODVMS | 1st of the month 10:00 |
+| `network/config-backup.yml` | net-config-backup | NETWORK | every night 05:15 |
+| `linux/delete-path.yml` | app-delete-download-dir-dev | PRODVMS · docker-dev | manual |
+| `linux/ping.yml` | vms-ping, hyperv-ping | PRODVMS, PVE-CLUSTER | manual |
+| `linux/authorized-key.yml` | — | any | manual (onboarding) |
+| `linux/ssh-pubkey-only.yml` | — | any | manual (new VMs) |
+| `checkmk/deploy-local-check.yml` | — | any | manual |
 
-to run a playbook on a specific host or group, use the "Limit" field during ansible-playbook setup or pass the --limit flag via CLI:
+## Access
+
+Semaphore logs in with its own SSH key (key store: `semaphore-ssh`), authorized for the
+`ansible` user on each managed host and restricted to connections from `cfg-ansible`.
+On OPNsense the same key can only run `cat /conf/config.xml`; on TrueNAS it maps to the
+`netbackup` user, which can only write to `spacecifs/ntw-backup`.
+
+To add a host: create the `ansible` user with passwordless sudo, authorize the Semaphore
+key (`linux/authorized-key.yml`, or by hand), add it to the inventory and run `vms-ping`.
+
+## Checks
+
+Every push and pull request runs `ansible-lint` (see `.github/workflows/lint.yml`).
+Locally:
+
 ```bash
-ansible-playbook playbook.yml --limit svc-ncloud
+pip install ansible-core ansible-lint
+ansible-galaxy collection install -r requirements.yml
+ansible-lint
 ```
 
-
-btw feel free to propose any changes via pull request or open an issue in case there something that is not working as expected 
+The playbooks removed in the October 2026 cleanup (k8s, Wake-on-LAN, CPU frequency,
+time sync, Firefly importer, …) are still available at the `legacy-2026-10-27` tag.
