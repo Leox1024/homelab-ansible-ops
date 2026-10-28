@@ -173,6 +173,12 @@
                 fail_msg: "The switch shows VLAN {{ vlan_tag }} as {{ switch_plan.existing }}"
                 quiet: true
 
+            - name: Check the VLAN is in the saved configuration
+              ansible.builtin.assert:
+                that: switch_saved | bool
+                fail_msg: VLAN {{ vlan_tag }} is running but not saved (write memory)
+                quiet: true
+
       always:
         - name: Remove the temporary directory
           ansible.builtin.file:
@@ -212,7 +218,9 @@
             checks     {{ opn.checks }}
           {% endif %}
 
-          Switch {{ sw_host }}: {{ 'already done' if not sw.switch_todo | bool else ('applied' if vlan_mode == 'add' else 'to do') }}
+          {% set sw_state = 'already done' if not sw.switch_todo | bool else ('applied' if vlan_mode == 'add' else 'to do') %}
+          {% set sw_saved = (', saved' if sw.switch_saved | bool else ', NOT SAVED (write memory)') if sw.switch_plan.exists else '' %}
+          Switch {{ sw_host }}: {{ sw_state }}{{ sw_saved }}
             tagged on  {{ sw.switch_plan.trunk_ports | join(' ') }}
             untouched  {{ sw.switch_plan.untouched_ports | join(' ') }}
             commands

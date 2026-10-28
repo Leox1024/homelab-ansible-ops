@@ -1,9 +1,11 @@
 ---
-# Downloads the switch running-config and plans the VLAN on it (files/fastiron-vlan-plan.py).
-# Runs on the controller, from a play on the switch. Expects: switch_tmp (directory),
-# switch_password, vlan_tag. Sets switch_plan.
+# Downloads the switch running and saved configurations, and plans the VLAN on the
+# running one (files/fastiron-vlan-plan.py). Runs on the controller, from a play on the
+# switch. Expects: switch_tmp (directory), switch_password, vlan_tag.
+# Sets switch_plan, and switch_saved (the VLAN is in the saved configuration).
 
-- name: Download the running-config
+- name: Download the running and saved configurations
+  loop: [runConfig, startConfig]
   ansible.builtin.command:
     argv:
       - sshpass
@@ -22,8 +24,8 @@
       - StrictHostKeyChecking=yes
       - -o
       - UserKnownHostsFile={{ switch_tmp.path }}/known_hosts
-      - "{{ ansible_user }}@{{ ansible_host }}:runConfig"
-      - "{{ switch_tmp.path }}/running-config.txt"
+      - "{{ ansible_user }}@{{ ansible_host }}:{{ item }}"
+      - "{{ switch_tmp.path }}/{{ item }}.txt"
   environment:
     SSHPASS: "{{ switch_password }}"
   changed_when: false
@@ -33,7 +35,7 @@
     argv:
       - python3
       - "{{ playbook_dir }}/files/fastiron-vlan-plan.py"
-      - "{{ switch_tmp.path }}/running-config.txt"
+      - "{{ switch_tmp.path }}/runConfig.txt"
       - "{{ vlan_tag }}"
   register: switch_plan_out
   changed_when: false
@@ -41,3 +43,4 @@
 - name: Read the plan
   ansible.builtin.set_fact:
     switch_plan: "{{ switch_plan_out.stdout | from_json }}"
+    switch_saved: "{{ lookup('ansible.builtin.file', switch_tmp.path ~ '/startConfig.txt') is search('(?m)^vlan ' ~ vlan_tag ~ ' ') }}"
