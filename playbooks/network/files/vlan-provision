@@ -1,0 +1,286 @@
+#!/usr/local/bin/php
+<?php
+
+/*
+ * Adds a VLAN to OPNsense the way the web interface would: VLAN device on the parent
+ * every existing VLAN uses, interface assignment with a static address, DHCP range
+ * (dnsmasq), DNS (Unbound) and the default rules:
+ *
+ *   DNS-OPNSENSE   pass TCP/UDP to the VLAN gateway, port 53
+ *   TANG           pass TCP to the TANG_SERVERS aliases (optional)
+ *                  (room left here for custom rules)
+ *   BLOCK-PRIVATE  block any to RFC1918
+ *   ALLOW-ANY      pass from the VLAN to any
+ *
+ *   vlan-provision plan <tag> <gateway/prefix> <dhcp-start> <dhcp-end> <tang|notang>
+ *   vlan-provision add  <tag> <gateway/prefix> <dhcp-start> <dhcp-end> <tang|notang>
+ *
+ * Both build and validate every change in memory. "plan" stops there and prints what
+ * "add" would do; "add" then saves the configuration once (a revision shows in the
+ * history) and applies it. The output is JSON.
+ */
+
+require_once('script/load_phalcon.php');
+require_once('config.inc');
+require_once('util.inc');
+
+use OPNsense\Core\Backend;
+use OPNsense\Core\Config;
+
+function out($data, $code = 0)
+{
+    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    exit($code);
+}
+
+function fail($msg)
+{
+    out(['result' => 'failed', 'error' => $msg], 1);
+}
+
+function validate($name, $model)
+{
+    $errors = [];
+    foreach ($model->performValidation() as $msg) {
+        $errors[] = "$name " . $msg->getField() . ': ' . $msg->getMessage();
+    }
+    return $errors;
+}
+
+[$mode, $tag, $gw, $dstart, $dend, $tang] = array_pad(array_slice($argv, 1), 6, null);
+
+if (!in_array($mode, ['plan', 'add'], true)) {
+    fail('usage: vlan-provision plan|add <tag> <gateway/prefix> <dhcp-start> <dhcp-end> <tang|notang>');
+}
+if (!ctype_digit((string)$tag) || (int)$tag < 2 || (int)$tag > 4094) {
+    fail("invalid tag: $tag");
+}
+$tag = (int)$tag;
+if (
+    !preg_match('/^([0-9.]+)\/([0-9]+)$/', (string)$gw, $m) ||
+    !filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) || (int)$m[2] < 16 || (int)$m[2] > 30
+) {
+    fail("invalid gateway, expected a.b.c.d/16-30: $gw");
+}
+$gwip = $m[1];
+$prefix = (int)$m[2];
+foreach ([$dstart, $dend] as $addr) {
+    if (!filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        fail("invalid DHCP address: $addr");
+    }
+}
+if (!in_array($tang, ['tang', 'notang'], true)) {
+    fail('the last argument must be tang or notang');
+}
+
+$mask = (0xffffffff << (32 - $prefix)) & 0xffffffff;
+$net = ip2long($gwip) & $mask;
+$bcast = $net | (~$mask & 0xffffffff);
+$inside = function ($ip) use ($mask, $net) {
+    return (ip2long($ip) & $mask) === $net;
+};
+if (!$inside($dstart) || !$inside($dend) || ip2long($dstart) > ip2long($dend)) {
+    fail('the DHCP range must be inside the subnet, start before end');
+}
+if (in_array(ip2long($gwip), [$net, $bcast], true)) {
+    fail('the gateway cannot be the network or broadcast address');
+}
+if (ip2long($gwip) >= ip2long($dstart) && ip2long($gwip) <= ip2long($dend)) {
+    fail('the gateway is inside the DHCP range');
+}
+$overlaps = function ($addr, $bits) use ($mask, $net) {
+    $other = (0xffffffff << (32 - $bits)) & 0xffffffff;
+    $common = $mask & $other;
+    return ($net & $common) === ((ip2long($addr) & $other) & $common);
+};
+
+$descr = "V{$tag}";
+$cidr = long2ip($net) . "/$prefix";
+
+if ($mode == 'add') {
+    Config::getInstance()->lock();
+}
+$cfg = Config::getInstance()->object();
+
+/* the parent: every existing VLAN must sit on the same device */
+$parents = [];
+$vlanids = [0];
+foreach ($cfg->vlans->vlan ?? [] as $vlan) {
+    $parents[(string)$vlan->if] = true;
+    if ((int)$vlan->tag === $tag) {
+        /* made by an earlier run (same name, assigned): nothing to do, the switch may still be */
+        foreach ($cfg->interfaces->children() as $ifid => $intf) {
+            if ((string)$intf->if === (string)$vlan->vlanif && (string)$intf->descr === $descr && (string)$vlan->descr === $descr) {
+                out(['result' => 'exists', 'vlan' => ['device' => (string)$vlan->vlanif, 'tag' => $tag],
+                    'interface' => ['id' => $ifid, 'description' => $descr,
+                    'address' => "{$intf->ipaddr}/{$intf->subnet}"]]);
+            }
+        }
+        fail("VLAN $tag already exists ({$vlan->vlanif} on {$vlan->if}) and was not made by vlan-provision");
+    }
+    if (preg_match('/^vlan([0-9]+)$/', (string)$vlan->vlanif, $vm)) {
+        $vlanids[] = (int)$vm[1];
+    }
+}
+if (count($parents) !== 1) {
+    fail('expected all VLANs on one parent device, found: ' . implode(', ', array_keys($parents)));
+}
+$parent = array_key_first($parents);
+/* same device naming as the web interface: vlan0<next number> */
+$vlanif = sprintf('vlan0%d', max($vlanids) + 1);
+
+/* the interface: free identifier, unique name, subnet not used anywhere */
+$ifids = [];
+foreach ($cfg->interfaces->children() as $ifid => $intf) {
+    $ifids[] = $ifid;
+    if (strcasecmp((string)$intf->descr, $descr) === 0) {
+        fail("interface $ifid is already called $descr");
+    }
+    if ((string)$intf->if === $vlanif) {
+        fail("device $vlanif is already assigned to $ifid");
+    }
+    if (filter_var((string)$intf->ipaddr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && ctype_digit((string)$intf->subnet)) {
+        if ($overlaps((string)$intf->ipaddr, (int)$intf->subnet)) {
+            fail("$cidr overlaps $ifid ({$intf->descr}, {$intf->ipaddr}/{$intf->subnet})");
+        }
+    }
+}
+foreach ($cfg->staticroutes->route ?? [] as $route) {
+    if (preg_match('/^([0-9.]+)\/([0-9]+)$/', (string)$route->network, $rm) && $overlaps($rm[1], (int)$rm[2])) {
+        fail("$cidr overlaps the static route {$route->network}");
+    }
+}
+$n = 1;
+while (in_array("opt$n", $ifids, true)) {
+    $n++;
+}
+$ifid = "opt$n";
+
+/* rules go after every existing one, with room for custom rules before BLOCK-PRIVATE */
+$maxseq = 0;
+$aliases = [];
+foreach ($cfg->OPNsense->Firewall->Filter->rules->rule ?? [] as $rule) {
+    $maxseq = max($maxseq, (int)$rule->sequence);
+}
+foreach ($cfg->OPNsense->Firewall->Alias->aliases->alias ?? [] as $alias) {
+    $aliases[] = (string)$alias->name;
+}
+if ($tang == 'tang' && (!in_array('TANG_SERVERS', $aliases) || !in_array('TANG_PORTS', $aliases))) {
+    fail('the TANG_SERVERS and TANG_PORTS aliases are missing');
+}
+$base = (intdiv($maxseq, 100) + 2) * 100;
+$common = [
+    'enabled' => '1', 'action' => 'pass', 'quick' => '1', 'interface' => $ifid, 'direction' => 'in',
+    'ipprotocol' => 'inet', 'source_net' => $ifid, 'log' => '0',
+];
+$rules = [
+    $common + ['sequence' => $base, 'protocol' => 'TCP/UDP', 'destination_net' => $gwip,
+        'destination_port' => 'domain', 'description' => 'DNS-OPNSENSE'],
+];
+if ($tang == 'tang') {
+    $rules[] = $common + ['sequence' => $base + 10, 'protocol' => 'TCP', 'destination_net' => 'TANG_SERVERS',
+        'destination_port' => 'TANG_PORTS', 'description' => 'TANG'];
+}
+$rules[] = array_merge($common, ['sequence' => $base + 70, 'action' => 'block', 'protocol' => 'any',
+    'source_net' => 'any', 'destination_net' => 'RFC1918', 'description' => 'BLOCK-PRIVATE']);
+$rules[] = $common + ['sequence' => $base + 90, 'protocol' => 'any', 'destination_net' => 'any',
+    'description' => 'ALLOW-ANY'];
+
+$plan = [
+    'vlan' => ['device' => $vlanif, 'parent' => $parent, 'tag' => $tag, 'description' => $descr],
+    'interface' => ['id' => $ifid, 'description' => $descr, 'address' => "$gwip/$prefix", 'subnet' => $cidr],
+    'dhcp' => ['start' => $dstart, 'end' => $dend],
+    'rules' => array_map(function ($r) {
+        return sprintf('%d %s %s %s -> %s%s', $r['sequence'], $r['description'], $r['action'], $r['protocol'],
+            $r['destination_net'], isset($r['destination_port']) ? ':' . $r['destination_port'] : '');
+    }, $rules),
+    'custom_rules_sequence' => ($base + 20) . '-' . ($base + 69),
+];
+
+/* build every change in memory and validate all of it; only "add" saves */
+$errors = [];
+
+$vlanModel = new \OPNsense\Interfaces\Vlan();
+$vlanNode = $vlanModel->vlan->Add();
+$vlanNode->setNodes(['if' => $parent, 'tag' => (string)$tag, 'pcp' => '0', 'descr' => $descr, 'vlanif' => $vlanif]);
+$errors = array_merge($errors, validate('vlan', $vlanModel));
+if (empty($errors)) {
+    $vlanModel->serializeToConfig();
+}
+
+/* assignments live outside the models: same fields as the other VLAN interfaces */
+$intf = $cfg->interfaces->addChild($ifid);
+foreach (
+    ['if' => $vlanif, 'descr' => $descr, 'enable' => '1', 'lock' => '1', 'spoofmac' => '',
+    'ipaddr' => $gwip, 'subnet' => (string)$prefix] as $key => $value
+) {
+    $intf->addChild($key, $value);
+}
+
+$dnsmasq = new \OPNsense\Dnsmasq\Dnsmasq();
+if ((string)$dnsmasq->interface !== '') {
+    $dnsmasq->interface = implode(',', array_merge(explode(',', (string)$dnsmasq->interface), [$ifid]));
+}
+$range = $dnsmasq->dhcp_ranges->Add();
+$range->setNodes(['interface' => $ifid, 'start_addr' => $dstart, 'end_addr' => $dend, 'domain_type' => 'range']);
+$errors = array_merge($errors, validate('dnsmasq', $dnsmasq));
+
+$unbound = new \OPNsense\Unbound\Unbound();
+if ((string)$unbound->general->active_interface !== '') {
+    $unbound->general->active_interface = implode(
+        ',',
+        array_merge(explode(',', (string)$unbound->general->active_interface), [$ifid])
+    );
+}
+$errors = array_merge($errors, validate('unbound', $unbound));
+
+$filter = new \OPNsense\Firewall\Filter();
+foreach ($rules as $rule) {
+    $node = $filter->rules->rule->Add();
+    $node->setNodes(array_map('strval', $rule));
+}
+$errors = array_merge($errors, validate('filter', $filter));
+
+if (!empty($errors)) {
+    /* nothing was written: the configuration file is untouched */
+    out(['result' => 'failed', 'error' => 'validation failed, nothing changed', 'details' => $errors], 1);
+}
+if ($mode == 'plan') {
+    out(['result' => 'plan', 'validation' => 'ok'] + $plan);
+}
+
+$dnsmasq->serializeToConfig();
+$unbound->serializeToConfig();
+$filter->serializeToConfig();
+Config::getInstance()->save(['description' => "vlan-provision: VLAN $tag $descr on $ifid ($cidr)"]);
+
+/* apply, in the order the web interface uses */
+$backend = new Backend();
+$applied = [];
+foreach (
+    [
+        ['interface vlan configure', []],
+        ['interface invoke registration', []],
+        ['interface reconfigure', [$ifid]],
+        ['filter reload', []],
+        ['dnsmasq restart', []],
+        ['unbound restart', []],
+    ] as [$action, $params]
+) {
+    $res = empty($params) ? $backend->configdRun($action) : $backend->configdpRun($action, $params);
+    $applied[$action] = trim((string)$res) === '' ? 'OK' : trim((string)$res);
+}
+
+/* check the result */
+exec('/sbin/ifconfig ' . escapeshellarg($vlanif) . ' 2>&1', $ifout);
+exec('/sbin/pfctl -sr 2>/dev/null', $pfout);
+exec('/usr/bin/sockstat -4l 2>/dev/null', $sockout);
+$checks = [
+    'address' => (bool)preg_grep('/inet ' . preg_quote($gwip) . ' /', $ifout),
+    'rules' => count(preg_grep('/ on ' . preg_quote($vlanif) . ' /', $pfout)) > 0,
+    'dns' => (bool)preg_grep('/' . preg_quote("$gwip:53") . '/', $sockout),
+    'dhcp' => trim((string)shell_exec('/bin/pgrep -x dnsmasq')) !== '',
+];
+
+out(['result' => in_array(false, $checks, true) ? 'check_failed' : 'created'] + $plan
+    + ['applied' => $applied, 'checks' => $checks], in_array(false, $checks, true) ? 2 : 0);
