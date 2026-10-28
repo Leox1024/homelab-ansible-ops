@@ -13,7 +13,8 @@ playbooks/
 ├── linux/       generic Debian/Ubuntu tasks (logs, SSH, cleanup, health check)
 ├── network/     firewall and switch configuration backups
 ├── nextcloud/   Nextcloud maintenance and its TLS certificate
-└── proxmox/     Proxmox VE nodes
+├── proxmox/     Proxmox VE nodes and VM provisioning
+└── tang/        Tang servers for the automatic unlock of encrypted VMs
 extras/
 └── grafana-dashboards/   dashboard exports, not used by Ansible
 ```
@@ -31,6 +32,30 @@ extras/
 | `nextcloud/files-scan.yml` | rescans user files (`occ files:scan`) |
 | `nextcloud/letsencrypt-cloudflare.yml` | issues or renews a Let's Encrypt certificate with the Cloudflare DNS challenge |
 | `proxmox/pbs-host-backup.yml` | backs up basic node configuration files to Proxmox Backup Server |
+| `proxmox/vm-create.yml` | creates a VM from a cloud-init template; from a LUKS template the disk gets its own key and is bound to Tang |
+| `proxmox/vm-destroy.yml` | deletes a VM made by `vm-create.yml`, optionally destroying its client's Tang keys |
+| `tang/clients.yml` | lists the Tang clients, their keys on every server and their VMs |
+| `tang/server.yml` | sets up a Tang server (run as root, not from the automation user) |
+
+## Encrypted VMs (LUKS + Tang)
+
+Every copy of a VM disk (backups to any storage, replicas, snapshots) is only as private
+as the disk itself, so the encryption lives inside the VM:
+
+- `proxmox/files/luks-template-build.sh` builds a Debian cloud template whose root is
+  LUKS2. Clones open it at first boot with a key shared by the template.
+- `proxmox/vm-create.yml` clones it, re-encrypts the disk with a new key, adds a recovery
+  passphrase and binds the disk to the client's Tang servers (Clevis, any one server is
+  enough), then removes the template key. The VM then reboots without any key on disk.
+- Every client has its own Tang keys and port (`tang/files/tang-client`). Deleting them
+  (`vm-destroy.yml` with `vm_shred_client`) makes every copy of the client's disks
+  unreadable, except with the recovery passphrases.
+- Keep the Tang servers out of every backup job, and give the VMs a CPU type with AES-NI
+  (`pve_cpu`, `x86-64-v2-AES` by default).
+
+The generated secrets are only printed encrypted with [age](https://age-encryption.org)
+(`provision_age_recipient`), so they never sit in plain text in Semaphore. The API token
+only needs rights on the two templates, the VM pool, the storage and the bridge.
 
 ## Conventions
 

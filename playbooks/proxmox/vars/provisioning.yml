@@ -1,0 +1,38 @@
+---
+# Defaults for vm-create.yml, vm-destroy.yml and tang/clients.yml. Set the site values in
+# the inventory or in a Semaphore variable group, the token secret in a Semaphore secret.
+
+# Proxmox VE API: nodes to try in order, API token (user!token-name) and its secret.
+pve_api_hosts: []
+pve_api_port: 8006
+pve_api_token_id: ""
+pve_api_token_secret: ""
+# Cluster CA (/etc/pve/pve-root-ca.pem) in PEM: without it the certificate is not checked.
+pve_api_ca_cert: ""
+
+# Where new VMs go. The pool also limits what the API token may change or delete.
+pve_storage: local-zfs
+pve_bridge: vmbr0
+pve_pool: provisioning
+pve_cpu: x86-64-v2-AES
+
+# Templates whose root is LUKS-encrypted (built with files/luks-template-build.sh).
+vm_luks_templates: []
+# First VMID to use when vm_id is not given.
+vm_id_min: 1000
+
+# The generated secrets are encrypted for this age public key (age1...), and the summary
+# shows how to decrypt them.
+provision_age_recipient: ""
+provision_age_decrypt: age -d -i <your age identity file>
+# Public keys authorized on every new VM besides the generated one (e.g. the automation key).
+provision_ssh_pubkeys: []
+
+# Request defaults (vm-create.yml).
+vm_cores: 1
+vm_memory: 1024
+vm_disk_gb: 10
+vm_user: admin
+vm_gateway: ""   # empty: .1 of the VM subnet
+vm_node: ""      # empty: the node of the template
+vm_id: ""        # empty: the first free id from vm_id_min

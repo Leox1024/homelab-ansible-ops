@@ -1,0 +1,394 @@
+---
+# Creates a VM from a cloud-init template: clone, resources, VLAN and address, a user with
+# a generated SSH key, start. From a LUKS template (vm_luks_templates) the disk also gets
+# a key of its own and opens by itself at boot through the client's Tang servers
+# (inventory group tang, see playbooks/tang/). Deleting the client's Tang keys later makes
+# every copy of the disk unreadable, backups included.
+#
+# The summary shows the address and how to log in. The generated secrets (password, SSH
+# private key, LUKS recovery passphrase) are only shown encrypted with age, so they never
+# sit in plain text in the task output, its database or its backups.
+#
+# Inputs: vm_client, vm_name, vm_template, vm_vlan, vm_ip (address/prefix); optional
+# vm_gateway, vm_cores, vm_memory (MB), vm_disk_gb, vm_node, vm_user, vm_id.
+# Site settings: vars/provisioning.yml.
+
+- name: Proxmox | check the request and prepare the secrets
+  hosts: localhost
+  gather_facts: false
+  vars_files: vars/provisioning.yml
+  module_defaults:
+    ansible.builtin.uri: &pve_uri
+      headers:
+        Authorization: PVEAPIToken={{ pve_api_token_id }}={{ pve_api_token_secret }}
+      validate_certs: "{{ pve_api_ca_cert | length > 0 }}"
+      ca_path: "{{ pve_api_ca_file.path | default(omit) }}"
+      timeout: 30
+
+  tasks:
+    - name: Check the request
+      ansible.builtin.assert:
+        that:
+          - vm_client is match('^[a-z0-9][a-z0-9-]{0,30}$')
+          - vm_name is match('^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+          - vm_template | int > 0
+          - vm_vlan | int >= 1 and vm_vlan | int <= 4094
+          - vm_ip is match('^([0-9]{1,3}[.]){3}[0-9]{1,3}/[0-9]{1,2}$')
+          - vm_cores | int >= 1
+          - vm_memory | int >= 512
+          - vm_disk_gb | int >= 4
+          - vm_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+          - provision_age_recipient is match('^age1')
+        fail_msg: >-
+          Check vm_client and vm_name (lowercase letters, digits, dashes), vm_template,
+          vm_vlan (1-4094), vm_ip (e.g. 10.0.70.20/24), vm_cores, vm_memory (MB, 512 or more),
+          vm_disk_gb (4 or more), vm_user and provision_age_recipient
+        quiet: true
+
+    - name: Connect to the Proxmox VE API
+      ansible.builtin.include_tasks: tasks/pve-api.yml
+
+    - name: Read the guests
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/cluster/resources?type=vm"
+      register: pve_guests
+
+    - name: Work out the VM settings
+      ansible.builtin.set_fact:
+        vm_tpl: "{{ pve_guests.json.data | selectattr('vmid', 'eq', vm_template | int) | first | default({}) }}"
+        vm_used_ids: "{{ pve_guests.json.data | map(attribute='vmid') | list }}"
+        vm_encrypted: "{{ vm_template | int in vm_luks_templates | map('int') | list }}"
+        vm_address: "{{ vm_ip.split('/')[0] }}"
+        vm_gw: "{{ vm_gateway if vm_gateway else (vm_ip.split('/')[0].split('.')[:3] | join('.')) ~ '.1' }}"
+
+    - name: Check the template and the name
+      ansible.builtin.assert:
+        that:
+          - vm_tpl.template | default(0) == 1
+          - vm_name not in pve_guests.json.data | map(attribute='name', default='') | list
+          - not vm_id or vm_id | int not in vm_used_ids
+        fail_msg: >-
+          {{ vm_template }} must be a template, and no guest may already use the name
+          {{ vm_name }} or the id {{ vm_id }}
+        quiet: true
+
+    - name: Choose the VMID and the node
+      ansible.builtin.set_fact:
+        vm_newid: "{{ vm_id | int if vm_id else range(vm_id_min | int, vm_id_min | int + 10000) | difference(vm_used_ids) | min }}"
+        vm_target_node: "{{ vm_node if vm_node else vm_tpl.node }}"
+
+    - name: Generate the passwords
+      ansible.builtin.set_fact:
+        vm_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+        vm_luks_recovery: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}"
+      no_log: true
+
+    - name: Create a directory for the SSH key
+      ansible.builtin.tempfile:
+        state: directory
+      register: vm_keydir
+
+    - name: Generate the SSH key
+      ansible.builtin.command:
+        argv: [ssh-keygen, -q, -t, ed25519, -N, "", -C, "{{ vm_user }}@{{ vm_name }}", -f, "{{ vm_keydir.path }}/id_ed25519"]
+        creates: "{{ vm_keydir.path }}/id_ed25519"
+
+    - name: Read the SSH key
+      ansible.builtin.set_fact:
+        vm_ssh_pubkey: "{{ lookup('ansible.builtin.file', vm_keydir.path ~ '/id_ed25519.pub') }}"
+        vm_ssh_privkey: "{{ lookup('ansible.builtin.file', vm_keydir.path ~ '/id_ed25519') }}"
+      no_log: true
+
+- name: Tang | client keys
+  hosts: tang
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    vm_client: "{{ hostvars['localhost'].vm_client }}"
+
+  tasks:
+    - name: Create the client keys on every Tang server
+      when: hostvars['localhost'].vm_encrypted | bool
+      block:
+        - name: List the clients
+          ansible.builtin.command: sudo -n /usr/local/sbin/tang-client list
+          register: tang_list
+          changed_when: false
+
+        # The same port on every server: the client's existing one, or the next free one.
+        - name: Choose the client port
+          ansible.builtin.set_fact:
+            tang_port: >-
+              {%- set clients = ansible_play_hosts | map('extract', hostvars, ['tang_list', 'stdout_lines'])
+                  | flatten | map('from_json') | list -%}
+              {%- set mine = clients | selectattr('client', 'eq', vm_client) | map(attribute='port') | list -%}
+              {{ mine | first if mine else ([7500] + clients | map(attribute='port') | list) | max + 1 }}
+
+        - name: Create the client keys
+          ansible.builtin.command: sudo -n /usr/local/sbin/tang-client add {{ vm_client }} {{ tang_port }}
+          register: tang_add
+          changed_when: tang_add.stdout == 'created'
+
+- name: Proxmox | create and start the VM
+  hosts: localhost
+  gather_facts: false
+  vars_files: vars/provisioning.yml
+  module_defaults:
+    ansible.builtin.uri: *pve_uri
+
+  vars:
+    vm_tang_port: "{{ hostvars[groups['tang'][0]].tang_port | default('') }}"
+    vm_tags: "client-{{ vm_client }}{{ ';luks' if vm_encrypted else '' }}"
+    vm_description: |
+      Client: {{ vm_client }}
+      Created by vm-create on {{ now(fmt='%Y-%m-%d') }} from {{ vm_tpl.name }} ({{ vm_tpl.vmid }}).
+      {% if vm_encrypted %}LUKS2 disk, unlocked at boot by the Tang servers (port {{ vm_tang_port }}).{% endif %}
+
+  tasks:
+    - name: Clone the template
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/nodes/{{ vm_tpl.node }}/qemu/{{ vm_tpl.vmid }}/clone"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          newid: "{{ vm_newid }}"
+          name: "{{ vm_name }}"
+          full: 1
+          storage: "{{ pve_storage }}"
+          pool: "{{ pve_pool }}"
+      register: vm_clone
+      changed_when: true
+
+    - name: Wait for the clone
+      ansible.builtin.include_tasks: tasks/pve-wait.yml
+      vars:
+        pve_upid: "{{ vm_clone.json.data }}"
+
+    # The password travels in this call: no_log, and errors are reported below.
+    - name: Configure the VM
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/nodes/{{ vm_tpl.node }}/qemu/{{ vm_newid }}/config"
+        method: PUT
+        body_format: form-urlencoded
+        body:
+          cores: "{{ vm_cores }}"
+          memory: "{{ vm_memory }}"
+          cpu: "{{ pve_cpu }}"
+          onboot: 1
+          agent: enabled=1
+          net0: virtio,bridge={{ pve_bridge }},tag={{ vm_vlan }}
+          ipconfig0: ip={{ vm_ip }},gw={{ vm_gw }}
+          nameserver: "{{ vm_gw }}"
+          ciuser: "{{ vm_user }}"
+          cipassword: "{{ vm_password }}"
+          # The API wants the keys URL-encoded inside the form.
+          sshkeys: "{{ ([vm_ssh_pubkey] + provision_ssh_pubkeys) | join('\n') | urlencode }}"
+          tags: "{{ vm_tags }}"
+          description: "{{ vm_description }}"
+      register: vm_config
+      no_log: true
+      failed_when: false
+
+    - name: Check the VM configuration
+      ansible.builtin.assert:
+        that: vm_config.status | default(0) == 200
+        fail_msg: "Configuration refused: {{ vm_config.json.errors | default(vm_config.msg | default('?')) }}"
+        quiet: true
+
+    - name: Grow the disk
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/nodes/{{ vm_tpl.node }}/qemu/{{ vm_newid }}/resize"
+        method: PUT
+        body_format: form-urlencoded
+        body:
+          disk: scsi0
+          size: "{{ vm_disk_gb }}G"
+      register: vm_resize
+      changed_when: true
+      when: vm_disk_gb | int * 1024**3 > vm_tpl.maxdisk | int
+
+    - name: Wait for the disk to grow
+      ansible.builtin.include_tasks: tasks/pve-wait.yml
+      vars:
+        pve_upid: "{{ vm_resize.json.data }}"
+      when: vm_resize.json.data | default('') is string and vm_resize.json.data | default('') is match('UPID:')
+
+    - name: Move the VM to its node
+      when: vm_target_node != vm_tpl.node
+      block:
+        - name: Migrate the VM
+          ansible.builtin.uri:
+            url: "{{ pve_api }}/nodes/{{ vm_tpl.node }}/qemu/{{ vm_newid }}/migrate"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              target: "{{ vm_target_node }}"
+          register: vm_migrate
+          changed_when: true
+
+        - name: Wait for the migration
+          ansible.builtin.include_tasks: tasks/pve-wait.yml
+          vars:
+            pve_upid: "{{ vm_migrate.json.data }}"
+
+    - name: Start the VM
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/nodes/{{ vm_target_node }}/qemu/{{ vm_newid }}/status/start"
+        method: POST
+      register: vm_start
+      changed_when: true
+
+    - name: Wait for the start
+      ansible.builtin.include_tasks: tasks/pve-wait.yml
+      vars:
+        pve_upid: "{{ vm_start.json.data }}"
+
+    - name: Wait for SSH
+      ansible.builtin.wait_for:
+        host: "{{ vm_address }}"
+        port: 22
+        timeout: 300
+
+    - name: Add the VM to this run
+      ansible.builtin.add_host:
+        name: "{{ vm_name }}"
+        groups: new_vm
+        ansible_host: "{{ vm_address }}"
+        ansible_user: "{{ vm_user }}"
+        # A new VM has a new host key.
+        ansible_ssh_common_args: -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+
+- name: VM | first boot
+  hosts: new_vm
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Wait for the VM to accept the login
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Wait for cloud-init
+      ansible.builtin.command: cloud-init status --wait
+      register: vm_cloud_init
+      changed_when: false
+      failed_when: vm_cloud_init.rc not in [0, 2]
+
+    - name: Read the VM facts
+      ansible.builtin.setup:
+
+    - name: Install the QEMU guest agent
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Start the QEMU guest agent
+      ansible.builtin.systemd_service:
+        name: qemu-guest-agent
+        state: started
+
+    - name: Allow SSH public keys only
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-pubkey-only.conf
+        content: |
+          # Managed by Ansible (homelab-ansible-ops: playbooks/linux/ssh-pubkey-only.yml)
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitEmptyPasswords no
+          AuthenticationMethods publickey
+          PermitRootLogin prohibit-password
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      register: vm_sshd
+
+    - name: Restart sshd # noqa: no-handler (it must happen before the reboot below)
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: restarted
+      when: vm_sshd.changed
+
+    - name: Give the disk a key of its own and bind it to Tang
+      when: hostvars['localhost'].vm_encrypted | bool
+      block:
+        - name: List the Tang URLs of the client
+          ansible.builtin.set_fact:
+            luks_tang_urls: >-
+              {%- set urls = [] -%}
+              {%- for h in groups['tang'] -%}
+              {%- set _ = urls.append('http://' ~ hostvars[h].ansible_host ~ ':' ~ hostvars[h].tang_port) -%}
+              {%- endfor -%}
+              {{ urls }}
+
+        - name: Finalize the LUKS disk
+          ansible.builtin.include_tasks: tasks/luks-finalize.yml
+          vars:
+            luks_recovery_passphrase: "{{ hostvars['localhost'].vm_luks_recovery }}"
+
+    - name: Read the SSH host key fingerprint
+      ansible.builtin.command: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+      register: vm_hostkey
+      changed_when: false
+
+- name: Proxmox | summary
+  hosts: localhost
+  gather_facts: false
+  vars_files: vars/provisioning.yml
+
+  vars:
+    vm_tang_port: "{{ hostvars[groups['tang'][0]].tang_port | default('') }}"
+    vm_secrets: |
+      {{ vm_name }} ({{ vm_address }}, VMID {{ vm_newid }}), created {{ now(fmt='%Y-%m-%d %H:%M') }}
+      user:     {{ vm_user }}
+      password: {{ vm_password }}   (console only: SSH takes keys only)
+      {% if vm_encrypted %}
+      LUKS recovery passphrase: {{ vm_luks_recovery }}
+      (opens the disk from the console when no Tang server answers)
+      {% endif %}
+      SSH private key:
+      {{ vm_ssh_privkey }}
+
+  tasks:
+    # age runs on a Tang server: the automation host does not need it installed.
+    - name: Encrypt the secrets for the age key
+      ansible.builtin.command:
+        cmd: age --armor --recipient {{ provision_age_recipient }}
+        stdin: "{{ vm_secrets }}"
+      delegate_to: "{{ groups['tang'][0] }}"
+      register: vm_secrets_age
+      changed_when: false
+      no_log: true
+
+    - name: Remove the SSH key directory
+      ansible.builtin.file:
+        path: "{{ vm_keydir.path }}"
+        state: absent
+
+    - name: Remove the CA file
+      ansible.builtin.file:
+        path: "{{ pve_api_ca_file.path }}"
+        state: absent
+      when: pve_api_ca_file.path is defined
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: |-
+          {{ vm_name }} is up: VMID {{ vm_newid }} on {{ vm_target_node }}
+            client      {{ vm_client }}
+            template    {{ vm_tpl.name }} ({{ vm_tpl.vmid }}){{ ', LUKS2 disk opened by Tang at boot' if vm_encrypted else '' }}
+            network     VLAN {{ vm_vlan }}, {{ vm_ip }}, gateway {{ vm_gw }}
+            resources   {{ vm_cores }} vCPU, {{ vm_memory }} MB RAM, {{ vm_disk_gb }} GB disk
+            login       ssh {{ vm_user }}@{{ vm_address }}
+            host key    {{ hostvars[vm_name].vm_hostkey.stdout.split()[1] }}
+          {% if vm_encrypted %}
+            Tang        port {{ vm_tang_port }} on {{ groups['tang'] | join(', ') }}
+          {% endif %}
+
+          Secrets (password, SSH private key{{ ', LUKS recovery passphrase' if vm_encrypted else '' }}),
+          encrypted for your age key. Copy the block, then:
+            pbpaste | sed 's/^ *//' | {{ provision_age_decrypt }}
+
+          {{ vm_secrets_age.stdout }}

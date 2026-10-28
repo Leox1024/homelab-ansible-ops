@@ -1,0 +1,126 @@
+---
+# Deletes a VM made by vm-create.yml: the API token can only touch VMs in pve_pool.
+# vm_confirm must repeat the VM name.
+# With vm_shred_client, once the client has no VM left, its Tang keys are destroyed on
+# every Tang server: every copy of its LUKS disks, backups included, can no longer be
+# opened. Also delete its recovery passphrases (they still open the disks) and the
+# vm-create task output if you no longer want to keep its encrypted secrets.
+#
+# Inputs: vm_id, vm_confirm, vm_shred_client (default false).
+# Site settings: vars/provisioning.yml.
+
+- name: Proxmox | delete the VM
+  hosts: localhost
+  gather_facts: false
+  vars_files: vars/provisioning.yml
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        Authorization: PVEAPIToken={{ pve_api_token_id }}={{ pve_api_token_secret }}
+      validate_certs: "{{ pve_api_ca_cert | length > 0 }}"
+      ca_path: "{{ pve_api_ca_file.path | default(omit) }}"
+      timeout: 30
+
+  vars:
+    vm_shred_client: false
+
+  tasks:
+    - name: Connect to the Proxmox VE API
+      ansible.builtin.include_tasks: tasks/pve-api.yml
+
+    - name: Read the guests
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/cluster/resources?type=vm"
+      register: pve_guests
+
+    - name: Find the VM
+      ansible.builtin.set_fact:
+        vm: "{{ pve_guests.json.data | selectattr('vmid', 'eq', vm_id | int) | first | default({}) }}"
+
+    - name: Check the VM and the confirmation
+      ansible.builtin.assert:
+        that:
+          - vm.vmid is defined
+          - vm.type == 'qemu'
+          - vm.pool | default('') == pve_pool
+          - vm_confirm == vm.name
+        fail_msg: >-
+          VM {{ vm_id }} must exist in the pool {{ pve_pool }}, and vm_confirm must repeat its name
+          ({{ vm.name | default('?') }})
+        quiet: true
+
+    - name: Read the client of the VM
+      ansible.builtin.set_fact:
+        vm_client: "{{ vm.tags | default('') | split(';') | select('match', '^client-') | map('regex_replace', '^client-', '') | first | default('') }}"
+
+    - name: Stop the VM
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/nodes/{{ vm.node }}/qemu/{{ vm.vmid }}/status/stop"
+        method: POST
+      register: vm_stop
+      changed_when: true
+      when: vm.status == 'running'
+
+    - name: Wait for the stop
+      ansible.builtin.include_tasks: tasks/pve-wait.yml
+      vars:
+        pve_upid: "{{ vm_stop.json.data }}"
+      when: vm.status == 'running'
+
+    - name: Delete the VM and its disks
+      ansible.builtin.uri:
+        url: "{{ pve_api }}/nodes/{{ vm.node }}/qemu/{{ vm.vmid }}?purge=1&destroy-unreferenced-disks=1"
+        method: DELETE
+      register: vm_delete
+      changed_when: true
+
+    - name: Wait for the deletion
+      ansible.builtin.include_tasks: tasks/pve-wait.yml
+      vars:
+        pve_upid: "{{ vm_delete.json.data }}"
+
+    - name: Decide about the client keys
+      ansible.builtin.set_fact:
+        vm_client_left: "{{ pve_guests.json.data | rejectattr('vmid', 'eq', vm.vmid)
+                            | selectattr('tags', 'defined') | selectattr('tags', 'search', '(^|;)client-' ~ vm_client ~ '(;|$)')
+                            | map(attribute='name') | list }}"
+        vm_shred: "{{ vm_shred_client | bool and vm_client | length > 0 }}"
+
+- name: Tang | destroy the client keys
+  hosts: tang
+  gather_facts: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: Destroy the client keys
+      ansible.builtin.command: sudo -n /usr/local/sbin/tang-client remove {{ hostvars['localhost'].vm_client }}
+      register: tang_remove
+      changed_when: tang_remove.stdout == 'removed'
+      when:
+        - hostvars['localhost'].vm_shred | bool
+        - hostvars['localhost'].vm_client_left | length == 0
+
+- name: Proxmox | summary
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Remove the CA file
+      ansible.builtin.file:
+        path: "{{ pve_api_ca_file.path }}"
+        state: absent
+      when: pve_api_ca_file.path is defined
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: |-
+          {{ vm.name }} (VMID {{ vm.vmid }}) and its disks are deleted.
+          {% if not vm_shred %}
+          The client keys are kept{{ ' (' ~ vm_client ~ ')' if vm_client else '' }}: its backups can still be restored.
+          {% elif vm_client_left %}
+          The keys of {{ vm_client }} are kept: the client still has {{ vm_client_left | join(', ') }}.
+          {% else %}
+          The Tang keys of {{ vm_client }} are destroyed on {{ groups['tang'] | join(', ') }}:
+          its encrypted disks and backups can no longer be opened by Tang. Delete its LUKS
+          recovery passphrases too, they still open them.
+          {% endif %}

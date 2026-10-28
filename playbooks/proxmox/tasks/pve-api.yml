@@ -1,0 +1,48 @@
+---
+# Finds a Proxmox VE node that answers the API and sets pve_api (base URL). Runs on
+# localhost, in a play whose module_defaults give ansible.builtin.uri the token header
+# and pve_api_ca_file (see vm-create.yml).
+
+- name: Require the API access
+  ansible.builtin.assert:
+    that:
+      - pve_api_hosts | length > 0
+      - pve_api_token_id | length > 0
+      - pve_api_token_secret | length > 0
+    fail_msg: Set pve_api_hosts, pve_api_token_id and the secret pve_api_token_secret
+    quiet: true
+
+- name: Write the cluster CA
+  when: pve_api_ca_cert | length > 0
+  block:
+    - name: Create the CA file
+      ansible.builtin.tempfile:
+        suffix: .pem
+      register: pve_api_ca_file
+
+    - name: Fill the CA file
+      ansible.builtin.copy:
+        dest: "{{ pve_api_ca_file.path }}"
+        content: "{{ pve_api_ca_cert }}\n"
+        mode: "0644"
+
+- name: Find a node that answers
+  ansible.builtin.uri:
+    url: https://{{ item }}:{{ pve_api_port }}/api2/json/version
+    timeout: 5
+  loop: "{{ pve_api_hosts }}"
+  register: pve_api_probe
+  failed_when: false
+
+- name: Use the first node that answers
+  ansible.builtin.set_fact:
+    pve_api: https://{{ (pve_api_probe.results | selectattr('status', 'eq', 200) | first).item }}:{{ pve_api_port }}/api2/json
+  when: pve_api_probe.results | selectattr('status', 'eq', 200) | list | length > 0
+
+- name: Stop when no node answers
+  ansible.builtin.assert:
+    that: pve_api is defined
+    fail_msg: >-
+      No Proxmox VE node answers:
+      {{ pve_api_probe.results | map(attribute='msg', default='?') | zip(pve_api_hosts) | list }}
+    quiet: true

@@ -1,0 +1,17 @@
+---
+# Waits for a Proxmox VE task to end and fails unless it ended with OK.
+# Expects: pve_upid (the task id an API call returned), pve_api.
+
+- name: Wait for the Proxmox task to end
+  ansible.builtin.uri:
+    url: "{{ pve_api }}/nodes/{{ pve_upid.split(':')[1] }}/tasks/{{ pve_upid | urlencode }}/status"
+  register: pve_task
+  until: pve_task.json.data.status == 'stopped'
+  retries: 180
+  delay: 5
+
+- name: Check the Proxmox task ended with OK
+  ansible.builtin.assert:
+    that: pve_task.json.data.exitstatus == 'OK'
+    fail_msg: "Proxmox task {{ pve_task.json.data.type }} failed: {{ pve_task.json.data.exitstatus }}"
+    quiet: true

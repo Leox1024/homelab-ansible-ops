@@ -1,0 +1,196 @@
+---
+# Gives a clone of the LUKS template a disk of its own, then grows it:
+# new volume key (the template one is shared by every clone), recovery passphrase,
+# automatic unlock through the client's Tang servers (any one of them is enough),
+# template key removed. Runs on the new VM, with become.
+# Expects: luks_tang_urls (list of Tang URLs), luks_recovery_passphrase.
+
+- name: Read the LUKS device under the root
+  ansible.builtin.command: cryptsetup status root_crypt
+  register: luks_status
+  changed_when: false
+
+- name: Check the disk still opens with the template key
+  ansible.builtin.stat:
+    path: /etc/luks/template.key
+  register: luks_template_key
+
+- name: Stop if the disk already has a key of its own
+  ansible.builtin.assert:
+    that: luks_template_key.stat.exists
+    fail_msg: /etc/luks/template.key is gone, this disk was already finalized
+    quiet: true
+
+- name: Set the LUKS facts
+  ansible.builtin.set_fact:
+    luks_device: "{{ luks_status.stdout | regex_search('device:\\s+(\\S+)', '\\1') | first }}"
+    luks_sss: >-
+      {%- set pins = [] -%}
+      {%- for url in luks_tang_urls -%}{%- set _ = pins.append({'url': url}) -%}{%- endfor -%}
+      {{ {'t': 1, 'pins': {'tang': pins}} | to_json }}
+
+- name: Check every Tang server answers from this VM
+  ansible.builtin.uri:
+    url: "{{ item }}/adv"
+    timeout: 5
+  loop: "{{ luks_tang_urls }}"
+
+- name: Re-encrypt the disk with a new volume key
+  ansible.builtin.command: cryptsetup reencrypt --batch-mode --key-file /etc/luks/template.key {{ luks_device }}
+  changed_when: true
+
+- name: Write the recovery passphrase to memory
+  ansible.builtin.copy:
+    dest: /run/luks-recovery
+    content: "{{ luks_recovery_passphrase }}"
+    mode: "0400"
+  no_log: true
+
+- name: Use the disk from now on
+  block:
+    - name: Add the recovery passphrase
+      ansible.builtin.command: >-
+        cryptsetup luksAddKey --batch-mode --key-file /etc/luks/template.key
+        {{ luks_device }} /run/luks-recovery
+      changed_when: true
+
+    - name: Check the recovery passphrase opens the disk
+      ansible.builtin.command: cryptsetup open --test-passphrase --key-file /run/luks-recovery {{ luks_device }}
+      changed_when: false
+
+    - name: Bind the disk to the Tang servers
+      ansible.builtin.command: >-
+        clevis luks bind -y -d {{ luks_device }} -k /etc/luks/template.key sss '{{ luks_sss }}'
+      changed_when: true
+
+    - name: Find the Tang key slot
+      ansible.builtin.command: clevis luks list -d {{ luks_device }}
+      register: luks_clevis
+      changed_when: false
+
+    - name: Check the Tang servers open the disk
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        clevis luks pass -d {{ luks_device }} -s {{ luks_clevis.stdout.split(':')[0] }}
+        | cryptsetup open --test-passphrase --key-file - {{ luks_device }}
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Remove the template key from the disk
+      ansible.builtin.command: cryptsetup luksRemoveKey --batch-mode {{ luks_device }} /etc/luks/template.key
+      changed_when: true
+
+    - name: Destroy the template key file
+      ansible.builtin.command: shred -u /etc/luks/template.key
+      changed_when: true
+
+    - name: Open the root without a key file at boot
+      ansible.builtin.replace:
+        path: /etc/crypttab
+        regexp: '^(root_crypt\s+\S+\s+)/etc/luks/template\.key(\s)'
+        replace: '\1none\2'
+
+    - name: Stop copying key files into the initramfs
+      ansible.builtin.lineinfile:
+        path: /etc/cryptsetup-initramfs/conf-hook
+        regexp: '^KEYFILE_PATTERN='
+        state: absent
+
+    # The initramfs needs the network to reach Tang, before cloud-init has run.
+    - name: Give the initramfs the VM address
+      ansible.builtin.copy:
+        dest: /etc/default/grub.d/91-luks-network.cfg
+        content: |
+          # Network for the Tang unlock in the initramfs (vm-create.yml)
+          GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX ip={{ luks_ip | join(':') }}"
+        mode: "0644"
+      vars:
+        luks_ip:
+          - "{{ ansible_default_ipv4.address }}"
+          - ""
+          - "{{ ansible_default_ipv4.gateway }}"
+          - "{{ ansible_default_ipv4.netmask }}"
+          - "{{ inventory_hostname_short }}"
+          - ""
+          - "off"
+
+    - name: Rebuild the initramfs
+      ansible.builtin.command: update-initramfs -u -k all
+      changed_when: true
+
+    - name: Update the boot loader
+      ansible.builtin.command: update-grub
+      changed_when: true
+
+    - name: Read the new initramfs
+      ansible.builtin.shell: set -o pipefail; lsinitramfs /boot/initrd.img-$(uname -r) | grep -c 'cryptroot/keyfiles/' || true
+      args:
+        executable: /bin/bash
+      register: luks_initramfs_keys
+      changed_when: false
+
+    - name: Check no key file is left in the initramfs
+      ansible.builtin.assert:
+        that: luks_initramfs_keys.stdout | int == 0
+        fail_msg: the initramfs still holds a key file
+        quiet: true
+
+    - name: Find the partition to grow
+      ansible.builtin.set_fact:
+        luks_disk: >-
+          /dev/{{ ansible_facts.devices | dict2items | selectattr('value.partitions', 'contains', luks_device | basename)
+                  | map(attribute='key') | first }}
+        luks_partnum: "{{ luks_device | regex_search('(\\d+)$', '\\1') | first }}"
+
+    # Not growpart: the partition must end on a 1 MiB boundary, or LUKS with 4096-byte
+    # sectors cannot open it at the next boot.
+    - name: Grow the partition to the end of the disk
+      ansible.builtin.shell: |
+        set -euo pipefail
+        disk={{ luks_disk }}
+        part=/sys/class/block/{{ luks_device | basename }}
+        sfdisk --relocate gpt-bak-std "$disk"
+        start=$(cat "$part/start")
+        end=$((($(blockdev --getsz "$disk") - 33) / 2048 * 2048 - 1))
+        size=$((end - start + 1))
+        if [ "$size" -le "$(cat "$part/size")" ]; then echo NOCHANGE; exit 0; fi
+        echo ",$size" | sfdisk --force --no-reread --no-tell-kernel -N {{ luks_partnum }} "$disk" >/dev/null
+        partx --update --nr {{ luks_partnum }} "$disk"
+        echo CHANGED
+      args:
+        executable: /bin/bash
+      register: luks_grow
+      changed_when: "'CHANGED' in luks_grow.stdout"
+
+    - name: Grow the encrypted device
+      ansible.builtin.command: cryptsetup resize --key-file /run/luks-recovery root_crypt
+      changed_when: true
+
+    - name: Grow the root file system
+      ansible.builtin.command: resize2fs /dev/mapper/root_crypt
+      changed_when: true
+
+    # Frees the blocks re-encryption filled: backups skip them again.
+    - name: Discard unused blocks
+      ansible.builtin.command: fstrim --all
+      changed_when: true
+
+  always:
+    - name: Destroy the recovery passphrase file
+      ansible.builtin.command: shred -u /run/luks-recovery
+      changed_when: true
+
+- name: Reboot to check the disk opens by itself
+  ansible.builtin.reboot:
+    reboot_timeout: 600
+
+- name: Read the encrypted root
+  ansible.builtin.command: cryptsetup status root_crypt
+  register: luks_after
+  changed_when: false
+
+- name: Check the root opened through Tang
+  ansible.builtin.assert:
+    that: "'is active and is in use' in luks_after.stdout"
+    quiet: true

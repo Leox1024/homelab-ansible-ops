@@ -1,0 +1,92 @@
+---
+# Sets up a Tang server for the automatic unlock of LUKS-encrypted VMs. Every client gets
+# its own Tang instance (own keys, own TCP port), managed with tang-client.
+# Run it as root: the automation user only gets sudo for tang-client.
+# Keep Tang servers out of every backup job: a backup holding the keys next to the
+# encrypted disks would make the encryption useless.
+# Variables: tang_automation_pubkey (public key allowed to manage clients),
+# tang_automation_from (address the automation connects from).
+
+- name: Tang | set up the server
+  hosts: all
+  gather_facts: false
+
+  vars:
+    tang_automation_user: ansible
+    tang_automation_pubkey: ""
+    tang_automation_from: ""
+
+  tasks:
+    - name: Install Tang and its tools
+      ansible.builtin.apt:
+        name: [tang, jose, age, curl, sudo]
+        update_cache: true
+        cache_valid_time: 3600
+
+    # Clients get their own instance: the shared one on port 80 must not hand out keys.
+    - name: Disable the default Tang instance
+      ansible.builtin.systemd_service:
+        name: tangd.socket
+        enabled: false
+        state: stopped
+        masked: true
+
+    - name: Create the client key directory
+      ansible.builtin.file:
+        path: /var/lib/tang-clients
+        state: directory
+        owner: root
+        group: _tang
+        mode: "0750"
+
+    - name: Install tang-client
+      ansible.builtin.copy:
+        src: files/tang-client
+        dest: /usr/local/sbin/tang-client
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create the Checkmk local check directory
+      ansible.builtin.file:
+        path: /usr/lib/check_mk_agent/local
+        state: directory
+        mode: "0755"
+
+    - name: Install the Checkmk local check
+      ansible.builtin.copy:
+        dest: /usr/lib/check_mk_agent/local/tang
+        content: |
+          #!/bin/sh
+          exec /usr/local/sbin/tang-client check
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create the automation user
+      ansible.builtin.user:
+        name: "{{ tang_automation_user }}"
+        shell: /bin/bash
+        password: "!"
+
+    - name: Authorize the automation key
+      when: tang_automation_pubkey | length > 0
+      ansible.posix.authorized_key:
+        user: "{{ tang_automation_user }}"
+        key: "{{ tang_automation_pubkey }}"
+        key_options: >-
+          {{ ('from="' ~ tang_automation_from ~ '",' if tang_automation_from else '')
+             ~ 'no-agent-forwarding,no-port-forwarding,no-X11-forwarding' }}
+        exclusive: true
+
+    - name: Allow the automation user to run tang-client only
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/tang-client
+        content: "{{ tang_automation_user }} ALL=(root) NOPASSWD: /usr/local/sbin/tang-client\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+
+- name: Tang | SSH public key authentication only
+  ansible.builtin.import_playbook: ../linux/ssh-pubkey-only.yml
