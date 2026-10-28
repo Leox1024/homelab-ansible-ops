@@ -1,0 +1,143 @@
+#!/bin/bash
+# One Tang instance per client: its own keys and its own TCP port, so deleting a
+# client's keys makes every copy of that client's encrypted disks unreadable.
+#
+#   tang-client list                 one JSON object per client
+#   tang-client add <client> <port>  create the client (or check it is already there)
+#   tang-client remove <client>      stop the client's instance and destroy its keys
+#   tang-client check                Checkmk local check
+set -euo pipefail
+
+KEYS_ROOT=/var/lib/tang-clients
+UNIT_DIR=/etc/systemd/system
+PORT_MIN=7501
+PORT_MAX=7999
+
+die() { echo "tang-client: $*" >&2; exit 1; }
+
+check_name() { [[ $1 =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "invalid client name: $1"; }
+
+clients() {
+  local f
+  for f in "$UNIT_DIR"/tang-*.socket; do
+    [ -e "$f" ] || continue
+    f=${f##*/tang-}
+    echo "${f%.socket}"
+  done
+}
+
+port_of() {
+  [ ! -e "$UNIT_DIR/tang-$1.socket" ] || sed -n 's/^ListenStream=//p' "$UNIT_DIR/tang-$1.socket"
+}
+
+# Thumbprints of the signing keys: what clevis shows when it binds a disk.
+thumbprints() {
+  local k
+  for k in "$KEYS_ROOT/$1"/*.jwk; do
+    if [ -e "$k" ] && jose jwk use -i "$k" -r -u verify; then
+      jose jwk thp -i "$k"
+    fi
+  done | paste -sd, -
+}
+
+cmd_list() {
+  local c
+  for c in $(clients); do
+    printf '{"client":"%s","port":%s,"active":"%s","created":"%s","keys":"%s"}\n' \
+      "$c" "$(port_of "$c")" "$(systemctl is-active "tang-$c.socket" || true)" \
+      "$(date -r "$KEYS_ROOT/$c" +%F 2>/dev/null)" "$(thumbprints "$c")"
+  done
+}
+
+cmd_add() {
+  local name=$1 port=$2 current c
+  check_name "$name"
+  [[ $port =~ ^[0-9]+$ ]] && ((port >= PORT_MIN && port <= PORT_MAX)) \
+    || die "port must be between $PORT_MIN and $PORT_MAX: $port"
+
+  current=$(port_of "$name")
+  if [ -n "$current" ]; then
+    [ "$current" = "$port" ] || die "$name already uses port $current"
+    systemctl enable --now --quiet "tang-$name.socket"
+    echo unchanged
+    return
+  fi
+  for c in $(clients); do
+    [ "$(port_of "$c")" != "$port" ] || die "port $port is already used by $c"
+  done
+  [ -z "$(ss -Hltn "sport = :$port")" ] || die "port $port is already in use"
+
+  install -d -m 0750 -o _tang -g _tang "$KEYS_ROOT/$name"
+  /usr/libexec/tangd-keygen "$KEYS_ROOT/$name"
+  chown _tang:_tang "$KEYS_ROOT/$name"/*.jwk
+  chmod 0440 "$KEYS_ROOT/$name"/*.jwk
+
+  cat >"$UNIT_DIR/tang-$name.socket" <<EOF
+[Unit]
+Description=Tang server for client $name
+Documentation=man:tang(8)
+
+[Socket]
+ListenStream=$port
+Accept=true
+
+[Install]
+WantedBy=sockets.target
+EOF
+  cat >"$UNIT_DIR/tang-$name@.service" <<EOF
+[Unit]
+Description=Tang server for client $name
+Documentation=man:tang(8)
+
+[Service]
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+ExecStart=/usr/libexec/tangd $KEYS_ROOT/$name
+User=_tang
+Group=_tang
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+EOF
+  systemctl daemon-reload
+  systemctl enable --now --quiet "tang-$name.socket"
+  echo created
+}
+
+cmd_remove() {
+  local name=$1
+  check_name "$name"
+  [ -e "$UNIT_DIR/tang-$name.socket" ] || [ -d "$KEYS_ROOT/$name" ] || { echo absent; return; }
+  systemctl disable --now --quiet "tang-$name.socket" 2>/dev/null || true
+  rm -f "$UNIT_DIR/tang-$name.socket" "$UNIT_DIR/tang-$name@.service"
+  systemctl daemon-reload
+  if [ -d "$KEYS_ROOT/$name" ]; then
+    find "$KEYS_ROOT/$name" -type f -exec shred -u {} +
+    rm -rf "${KEYS_ROOT:?}/$name"
+  fi
+  echo removed
+}
+
+cmd_check() {
+  local c port n=0
+  for c in $(clients); do
+    n=$((n + 1))
+    port=$(port_of "$c")
+    if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$port/adv"; then
+      echo "0 \"Tang $c\" - port $port, keys $(thumbprints "$c")"
+    else
+      echo "2 \"Tang $c\" - port $port does not answer"
+    fi
+  done
+  echo "0 \"Tang clients\" clients=$n $n client(s)"
+}
+
+case "${1:-}" in
+  list) cmd_list ;;
+  add) [ $# -eq 3 ] || die "usage: tang-client add <client> <port>"; cmd_add "$2" "$3" ;;
+  remove) [ $# -eq 2 ] || die "usage: tang-client remove <client>"; cmd_remove "$2" ;;
+  check) cmd_check ;;
+  *) die "usage: tang-client list | add <client> <port> | remove <client> | check" ;;
+esac

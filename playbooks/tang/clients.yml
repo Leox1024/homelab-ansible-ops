@@ -1,0 +1,78 @@
+---
+# Lists the Tang clients: port and keys on every server, and the VMs tagged
+# client-<name> when the Proxmox VE API settings of proxmox/vars/provisioning.yml are set.
+
+- name: Tang | read the clients
+  hosts: tang
+  gather_facts: false
+
+  tasks:
+    - name: List the clients
+      ansible.builtin.command: sudo -n /usr/local/sbin/tang-client list
+      register: tang_list
+      changed_when: false
+
+- name: Tang | summary
+  hosts: localhost
+  gather_facts: false
+  vars_files: ../proxmox/vars/provisioning.yml
+  module_defaults:
+    ansible.builtin.uri:
+      headers:
+        Authorization: PVEAPIToken={{ pve_api_token_id }}={{ pve_api_token_secret }}
+      validate_certs: "{{ pve_api_ca_cert | length > 0 }}"
+      ca_path: "{{ pve_api_ca_file.path | default(omit) }}"
+      timeout: 30
+
+  vars:
+    tang_entries: >-
+      {%- set out = [] -%}
+      {%- for h in groups['tang'] if hostvars[h].tang_list is defined -%}
+      {%- for line in hostvars[h].tang_list.stdout_lines -%}
+      {%- set _ = out.append(line | from_json | combine({'server': h})) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
+  tasks:
+    - name: Read the VMs of the clients
+      when: pve_api_token_secret | length > 0
+      block:
+        - name: Connect to the Proxmox VE API
+          ansible.builtin.include_tasks: ../proxmox/tasks/pve-api.yml
+
+        - name: Read the guests
+          ansible.builtin.uri:
+            url: "{{ pve_api }}/cluster/resources?type=vm"
+          register: pve_guests
+
+        - name: Remove the CA file
+          ansible.builtin.file:
+            path: "{{ pve_api_ca_file.path }}"
+            state: absent
+          when: pve_api_ca_file.path is defined
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: |-
+          {% set guests = pve_guests.json.data | default([]) | selectattr('tags', 'defined') | list %}
+          {% set unreachable = [] %}
+          {% for h in groups['tang'] if hostvars[h].tang_list.stdout_lines is not defined %}{% set _ = unreachable.append(h) %}{% endfor %}
+          {% for client in tang_entries | map(attribute='client') | unique | sort %}
+          {% set rows = tang_entries | selectattr('client', 'eq', client) | list %}
+          {% set vms = guests | selectattr('tags', 'search', '(^|;)client-' ~ client ~ '(;|$)') | list %}
+          {% set missing = groups['tang'] | difference(rows | map(attribute='server')) %}
+          {{ client }}  port {{ rows | map(attribute='port') | unique | join('/') }}, created {{ rows | map(attribute='created') | min }}
+            keys on   {{ rows | map(attribute='server') | join(', ') }}{{ '  MISSING on ' ~ missing | join(', ') if missing else '' }}
+          {% for r in rows if r.active != 'active' %}
+            WARNING   {{ r.server }}: socket {{ r.active }}
+          {% endfor %}
+          {% if pve_guests is defined %}
+            VMs       {% for v in vms %}{{ v.name }} ({{ v.vmid }}, {{ v.status }}){{ ', ' if not loop.last }}{% else %}none{% endfor %}
+          {% endif %}
+          {% else %}
+          No Tang clients yet.
+          {% endfor %}
+          {% if unreachable %}
+          Not answering: {{ unreachable | join(', ') }}
+          {% endif %}

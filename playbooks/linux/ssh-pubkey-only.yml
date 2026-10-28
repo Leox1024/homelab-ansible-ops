@@ -8,10 +8,12 @@
   become: true
 
   handlers:
-    - name: Reload sshd
+    # A restart keeps open sessions. A reload fails on Debian 13 containers, where
+    # /run/sshd can be gone while ssh.service is socket-activated.
+    - name: Restart sshd
       ansible.builtin.systemd_service:
         name: ssh
-        state: reloaded
+        state: restarted
 
   tasks:
     - name: Make sure sshd_config reads sshd_config.d
@@ -33,4 +35,4 @@
         group: root
         mode: "0644"
         validate: /usr/sbin/sshd -t -f %s
-      notify: Reload sshd
+      notify: Restart sshd
