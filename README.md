@@ -54,8 +54,20 @@ as the disk itself, so the encryption lives inside the VM:
   (`pve_cpu`, `x86-64-v2-AES` by default).
 
 The generated secrets are only printed encrypted with [age](https://age-encryption.org)
-(`provision_age_recipient`), so they never sit in plain text in Semaphore. The API token
-only needs rights on the two templates, the VM pool, the storage and the bridge.
+(`provision_age_recipient`), so they never sit in plain text in Semaphore.
+
+The API token (`pve_api_token_id`, privilege separation off) belongs to a user with no
+password and only these rights:
+
+| Path | Privileges |
+|---|---|
+| `/pool/<pve_pool>` | `VM.Allocate`, `VM.Audit`, `VM.Clone`, `VM.Config.*` (CDROM, CPU, Cloudinit, Disk, HWType, Memory, Network, Options), `VM.GuestAgent.Audit`, `VM.Migrate`, `VM.PowerMgmt` |
+| `/vms/<template>` | `PVETemplateUser` (clone) |
+| `/vms`, `/nodes` | `VM.Audit`, `Sys.Audit` (free VMIDs and names, task status) |
+| `/storage/<pve_storage>` | `PVEDatastoreUser` |
+| `/sdn/zones/localnetwork/<pve_bridge>` | `PVESDNUser` |
+
+It can change or delete only the VMs in the pool, where `vm-create.yml` puts them.
 
 ## Conventions
 

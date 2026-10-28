@@ -56,7 +56,8 @@
       ansible.builtin.debug:
         msg: |-
           {% set guests = pve_guests.json.data | default([]) | selectattr('tags', 'defined') | list %}
-          {% set unreachable = groups['tang'] | reject('in', tang_entries | map(attribute='server') | unique | list) | list %}
+          {% set unreachable = [] %}
+          {% for h in groups['tang'] if hostvars[h].tang_list.stdout_lines is not defined %}{% set _ = unreachable.append(h) %}{% endfor %}
           {% for client in tang_entries | map(attribute='client') | unique | sort %}
           {% set rows = tang_entries | selectattr('client', 'eq', client) | list %}
           {% set vms = guests | selectattr('tags', 'search', '(^|;)client-' ~ client ~ '(;|$)') | list %}
@@ -73,5 +74,5 @@
           No Tang clients yet.
           {% endfor %}
           {% if unreachable %}
-          Servers without clients or not answering: {{ unreachable | join(', ') }}
+          Not answering: {{ unreachable | join(', ') }}
           {% endif %}

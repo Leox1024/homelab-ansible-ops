@@ -255,6 +255,7 @@
         groups: new_vm
         ansible_host: "{{ vm_address }}"
         ansible_user: "{{ vm_user }}"
+        ansible_python_interpreter: /usr/bin/python3
         # A new VM has a new host key.
         ansible_ssh_common_args: -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
 
