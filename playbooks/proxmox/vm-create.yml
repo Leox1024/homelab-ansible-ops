@@ -181,8 +181,8 @@
           nameserver: "{{ vm_gw }}"
           ciuser: "{{ vm_user }}"
           cipassword: "{{ vm_password }}"
-          # The API wants the keys URL-encoded inside the form.
-          sshkeys: "{{ ([vm_ssh_pubkey] + provision_ssh_pubkeys) | join('\n') | urlencode }}"
+          # The API wants the keys URL-encoded inside the form, "/" included.
+          sshkeys: "{{ ([vm_ssh_pubkey] + provision_ssh_pubkeys) | join('\n') | urlencode | replace('/', '%2F') }}"
           tags: "{{ vm_tags }}"
           description: "{{ vm_description }}"
       register: vm_config

@@ -48,9 +48,11 @@
 
 - name: Use the disk from now on
   block:
+    # pbkdf2 like the Tang slot: argon2id adds nothing to a random 40-character passphrase,
+    # and on a small VM its memory warning lands in the output clevis uses as the key.
     - name: Add the recovery passphrase
       ansible.builtin.command: >-
-        cryptsetup luksAddKey --batch-mode --key-file /etc/luks/template.key
+        cryptsetup luksAddKey --batch-mode --pbkdf pbkdf2 --key-file /etc/luks/template.key
         {{ luks_device }} /run/luks-recovery
       changed_when: true
 
@@ -72,7 +74,7 @@
       ansible.builtin.shell: >-
         set -o pipefail;
         clevis luks pass -d {{ luks_device }} -s {{ luks_clevis.stdout.split(':')[0] }}
-        | cryptsetup open --test-passphrase --key-file - {{ luks_device }}
+        | cryptsetup open --test-passphrase --key-slot {{ luks_clevis.stdout.split(':')[0] }} --key-file - {{ luks_device }}
       args:
         executable: /bin/bash
       changed_when: false
