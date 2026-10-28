@@ -1,0 +1,25 @@
+#!/bin/sh
+# Forced command of the automation key on OPNsense (authorized_keys command="..."):
+# only these commands run, with their arguments checked.
+#   cat /conf/config.xml                                  (network/config-backup.yml)
+#   vlan-provision plan|add <tag> <gw/prefix> <dhcp-start> <dhcp-end> tang|notang
+cmd=${SSH_ORIGINAL_COMMAND:-}
+nl='
+'
+case "$cmd" in
+*"$nl"*) ;;
+"cat /conf/config.xml")
+    exec /bin/cat /conf/config.xml
+    ;;
+*)
+    ip='([0-9]{1,3}[.]){3}[0-9]{1,3}'
+    if printf '%s\n' "$cmd" | grep -Eqx "vlan-provision (plan|add) [0-9]{1,4} $ip/[0-9]{1,2} $ip $ip (tang|notang)"; then
+        set -f
+        # shellcheck disable=SC2086 # split on purpose, the format was checked above
+        set -- $cmd
+        exec /usr/local/sbin/vlan-provision "$2" "$3" "$4" "$5" "$6" "$7"
+    fi
+    ;;
+esac
+echo "semaphore-gate: command not allowed" >&2
+exit 1

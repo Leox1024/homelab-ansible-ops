@@ -1,0 +1,53 @@
+---
+# Installs what the automation may run on OPNsense, and limits its key to it: the key
+# gets the forced command semaphore-gate, which only allows reading config.xml
+# (config-backup.yml) and vlan-provision (vlan-add.yml).
+# Run it as root with an admin key, not with the automation key.
+# Variables: opnsense_automation_key (public key), opnsense_automation_from (address the
+# automation connects from).
+
+- name: OPNsense | automation commands
+  hosts: opnsense
+  gather_facts: false
+
+  vars:
+    ansible_python_interpreter: /usr/local/bin/python3
+    opnsense_automation_user: root
+    opnsense_automation_key: ""
+    opnsense_automation_from: ""
+
+  handlers:
+    - name: Write the authorized keys of the user
+      ansible.builtin.command: /usr/local/opnsense/scripts/auth/sync_user.php -u {{ opnsense_automation_user }}
+      changed_when: true
+
+  tasks:
+    - name: Require the automation key
+      ansible.builtin.assert:
+        that: opnsense_automation_key is match('^(ssh-|ecdsa-)')
+        fail_msg: Set opnsense_automation_key to the automation public key
+        quiet: true
+
+    - name: Install the commands
+      ansible.builtin.copy:
+        src: files/{{ item }}
+        dest: /usr/local/sbin/{{ item }}
+        owner: root
+        group: wheel
+        mode: "0755"
+      loop:
+        - vlan-provision
+        - semaphore-gate
+
+    - name: Limit the automation key to semaphore-gate
+      ansible.builtin.script: files/opnsense-authorize-key.php
+      args:
+        executable: /usr/local/bin/php
+      environment:
+        AUTH_USER: "{{ opnsense_automation_user }}"
+        AUTH_ENTRY: >-
+          restrict,{{ ('from="' ~ opnsense_automation_from ~ '",') if opnsense_automation_from else '' }}command="/usr/local/sbin/semaphore-gate"
+          {{ opnsense_automation_key }}
+      register: opnsense_key
+      changed_when: opnsense_key.stdout is search('^changed', multiline=True)
+      notify: Write the authorized keys of the user

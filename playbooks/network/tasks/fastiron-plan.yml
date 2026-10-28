@@ -1,0 +1,43 @@
+---
+# Downloads the switch running-config and plans the VLAN on it (files/fastiron-vlan-plan.py).
+# Runs on the controller, from a play on the switch. Expects: switch_tmp (directory),
+# switch_password, vlan_tag. Sets switch_plan.
+
+- name: Download the running-config
+  ansible.builtin.command:
+    argv:
+      - sshpass
+      - -e
+      - scp
+      - -O
+      # The switch sends the file under another name than runConfig.
+      - -T
+      - -o
+      - KexAlgorithms=+diffie-hellman-group1-sha1
+      - -o
+      - HostKeyAlgorithms=+ssh-rsa
+      - -o
+      - PubkeyAuthentication=no
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - UserKnownHostsFile={{ switch_tmp.path }}/known_hosts
+      - "{{ ansible_user }}@{{ ansible_host }}:runConfig"
+      - "{{ switch_tmp.path }}/running-config.txt"
+  environment:
+    SSHPASS: "{{ switch_password }}"
+  changed_when: false
+
+- name: Plan the VLAN on the trunk ports
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/files/fastiron-vlan-plan.py"
+      - "{{ switch_tmp.path }}/running-config.txt"
+      - "{{ vlan_tag }}"
+  register: switch_plan_out
+  changed_when: false
+
+- name: Read the plan
+  ansible.builtin.set_fact:
+    switch_plan: "{{ switch_plan_out.stdout | from_json }}"

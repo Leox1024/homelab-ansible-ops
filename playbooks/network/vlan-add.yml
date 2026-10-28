@@ -1,0 +1,221 @@
+---
+# Adds a VLAN to the firewall and the switch: give it the tag.
+#
+# OPNsense (files/vlan-provision, reached through the forced command files/semaphore-gate
+# of the automation key): VLAN device on the trunk parent, interface V<tag> with the
+# gateway address, DHCP range, DNS, and the default rules DNS-OPNSENSE, TANG (optional),
+# BLOCK-PRIVATE, ALLOW-ANY, with room for custom rules before BLOCK-PRIVATE.
+# Switch (FastIron): the VLAN is tagged on the trunk ports only, the ports that already
+# carry every other VLAN. Access ports and partial trunks are not touched.
+#
+# vlan_apply false (default) changes nothing: it shows the plan, validates the firewall
+# changes and checks the switch login. With vlan_apply true the firewall goes first; if
+# the switch fails, run it again: a VLAN this playbook made is recognised and kept.
+# Undo: firewall configuration history (revision "vlan-provision: VLAN <tag>"), and
+# "no vlan <tag>" + "write memory" on the switch.
+#
+# Inputs: vlan_tag, vlan_apply, vlan_tang (default true).
+# Site settings: vlan_gateway_template, vlan_dhcp_start_template, vlan_dhcp_end_template
+# ("{tag}" is replaced: e.g. 10.0.{tag}.1/24, 10.0.{tag}.201, 10.0.{tag}.249),
+# brocade_password (secret), switch_host_key.
+
+- name: Network | check the request
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    vlan_apply: false
+    vlan_tang: true
+    vlan_gateway_template: ""
+    vlan_dhcp_start_template: ""
+    vlan_dhcp_end_template: ""
+
+  tasks:
+    - name: Check the request
+      ansible.builtin.assert:
+        that:
+          - vlan_tag | string is match('^[0-9]+$')
+          - vlan_tag | int >= 2 and vlan_tag | int <= 4094
+          - "'{tag}' in vlan_gateway_template"
+          - vlan_dhcp_start_template | length > 0
+          - vlan_dhcp_end_template | length > 0
+        fail_msg: vlan_tag must be 2-4094; set vlan_gateway_template and the DHCP templates
+        quiet: true
+
+    - name: Work out the addresses
+      ansible.builtin.set_fact:
+        vlan_mode: "{{ 'add' if vlan_apply | bool else 'plan' }}"
+        vlan_gateway: "{{ vlan_gateway_template | replace('{tag}', vlan_tag | int | string) }}"
+        vlan_dhcp_start: "{{ vlan_dhcp_start_template | replace('{tag}', vlan_tag | int | string) }}"
+        vlan_dhcp_end: "{{ vlan_dhcp_end_template | replace('{tag}', vlan_tag | int | string) }}"
+        vlan_tang_arg: "{{ 'tang' if vlan_tang | bool else 'notang' }}"
+
+- name: OPNsense | add the VLAN
+  hosts: opnsense
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    # The automation key runs a forced command without a pty.
+    ansible_ssh_use_tty: false
+    req: "{{ hostvars['localhost'] }}"
+
+  tasks:
+    - name: Run vlan-provision ({{ req.vlan_mode }})
+      ansible.builtin.raw: >-
+        vlan-provision {{ req.vlan_mode }} {{ req.vlan_tag | int }} {{ req.vlan_gateway }}
+        {{ req.vlan_dhcp_start }} {{ req.vlan_dhcp_end }} {{ req.vlan_tang_arg }}
+      register: opn_run
+      changed_when: 'opn_run.stdout is search(''"result": "created"'')'
+      failed_when: 'opn_run.stdout is not search(''"result": "(plan|created|exists)"'')'
+
+    - name: Read the result
+      ansible.builtin.set_fact:
+        opn_result: "{{ opn_run.stdout | from_json }}"
+
+- name: Switch | tag the VLAN on the trunk ports
+  hosts: switches
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    switch_password: "{{ brocade_password | default('') }}"
+    vlan_tag: "{{ hostvars['localhost'].vlan_tag | int }}"
+    vlan_apply: "{{ hostvars['localhost'].vlan_mode == 'add' }}"
+    switch_cli:
+      - sshpass
+      - -e
+      - ssh
+      - -tt
+      - -o
+      - KexAlgorithms=+diffie-hellman-group1-sha1
+      - -o
+      - HostKeyAlgorithms=+ssh-rsa
+      - -o
+      - PubkeyAuthentication=no
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - UserKnownHostsFile={{ switch_tmp.path }}/known_hosts
+      - -o
+      - ConnectTimeout=15
+      - "{{ ansible_user }}@{{ ansible_host }}"
+    # Lines the FastIron CLI prints when a command is refused.
+    switch_error_re: '(?im)^.*(invalid input|incomplete command|error|not allowed|failed).*$'
+
+  tasks:
+    - name: Require the switch password
+      ansible.builtin.assert:
+        that: switch_password | length > 0
+        fail_msg: Set the brocade_password secret
+        quiet: true
+
+    - name: Configure the switch
+      delegate_to: localhost
+      block:
+        - name: Create a temporary directory
+          ansible.builtin.tempfile:
+            state: directory
+          register: switch_tmp
+
+        - name: Pin the switch host key
+          ansible.builtin.copy:
+            dest: "{{ switch_tmp.path }}/known_hosts"
+            content: "{{ ansible_host }} {{ switch_host_key }}\n"
+            mode: "0600"
+
+        - name: Plan the VLAN
+          ansible.builtin.include_tasks: tasks/fastiron-plan.yml
+
+        - name: Stop on a VLAN this playbook did not make
+          ansible.builtin.assert:
+            that: not switch_plan.exists or switch_plan.existing.name == 'V' ~ vlan_tag
+            fail_msg: "VLAN {{ vlan_tag }} already exists on the switch as {{ switch_plan.existing.name | default('?') }}"
+            quiet: true
+
+        - name: Decide what the switch needs
+          ansible.builtin.set_fact:
+            switch_todo: >-
+              {{ not switch_plan.exists
+                 or not (switch_plan.trunk_ports | difference(switch_plan.existing.tagged) | length == 0) }}
+
+        # Read-only: shows the CLI is reachable and which prompt it gives.
+        - name: Check the switch CLI
+          ansible.builtin.command:
+            argv: "{{ switch_cli }}"
+            stdin: "{{ ['skip-page-display', 'show vlan ' ~ vlan_tag, 'exit'] | join('\n') }}"
+          environment:
+            SSHPASS: "{{ switch_password }}"
+          register: switch_probe
+          changed_when: false
+          failed_when: switch_probe.rc not in [0, 255] or switch_probe.stdout | length == 0
+          when: not vlan_apply | bool
+
+        - name: Apply the VLAN on the switch
+          when: vlan_apply | bool and switch_todo | bool
+          block:
+            - name: Run the switch commands
+              ansible.builtin.command:
+                argv: "{{ switch_cli }}"
+                stdin: "{{ (['skip-page-display'] + switch_plan.commands + ['exit']) | join('\n') }}"
+              environment:
+                SSHPASS: "{{ switch_password }}"
+              register: switch_session
+              changed_when: true
+              failed_when: switch_session.stdout is search(switch_error_re) or switch_session.stdout | length == 0
+
+            - name: Plan again on the new running-config
+              ansible.builtin.include_tasks: tasks/fastiron-plan.yml
+
+            - name: Check the VLAN is on every trunk port
+              ansible.builtin.assert:
+                that:
+                  - switch_plan.exists
+                  - switch_plan.trunk_ports | difference(switch_plan.existing.tagged) | length == 0
+                  - switch_plan.existing.untagged | length == 0
+                fail_msg: "The switch shows VLAN {{ vlan_tag }} as {{ switch_plan.existing }}"
+                quiet: true
+
+      always:
+        - name: Remove the temporary directory
+          ansible.builtin.file:
+            path: "{{ switch_tmp.path }}"
+            state: absent
+          when: switch_tmp.path is defined
+
+- name: Network | summary
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    opn: "{{ hostvars[groups['opnsense'][0]].opn_result }}"
+    sw_host: "{{ groups['switches'][0] }}"
+    sw: "{{ hostvars[sw_host] }}"
+
+  tasks:
+    - name: Summary
+      ansible.builtin.debug:
+        msg: |-
+          VLAN {{ vlan_tag }} (V{{ vlan_tag }}): {{ 'APPLIED' if vlan_mode == 'add' else 'PLAN ONLY, nothing changed' }}
+
+          OPNsense: {{ opn.result }}
+          {% if opn.vlan is defined %}
+            device     {{ opn.vlan.device }}{{ ' on ' ~ opn.vlan.parent if opn.vlan.parent is defined else '' }}
+            interface  {{ opn.interface.id }} {{ opn.interface.description }} {{ opn.interface.address }}
+          {% endif %}
+          {% if opn.dhcp is defined %}
+            DHCP       {{ opn.dhcp.start }} - {{ opn.dhcp.end }}
+            rules      {{ opn.rules | join('\n             ') }}
+            custom     sequence {{ opn.custom_rules_sequence }} (between the rules above and BLOCK-PRIVATE)
+          {% endif %}
+          {% if opn.checks is defined %}
+            checks     {{ opn.checks }}
+          {% endif %}
+
+          Switch {{ sw_host }}: {{ 'already done' if not sw.switch_todo | bool else ('applied' if vlan_mode == 'add' else 'to do') }}
+            tagged on  {{ sw.switch_plan.trunk_ports | join(' ') }}
+            untouched  {{ sw.switch_plan.untouched_ports | join(' ') }}
+            commands   {{ sw.switch_plan.commands | join('\n             ') }}
+          {% if sw.switch_probe.stdout is defined %}
+            CLI check  {{ sw.switch_probe.stdout_lines | select | list | last | default('') }}
+          {% endif %}

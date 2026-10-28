@@ -29,6 +29,8 @@ extras/
 | `linux/ping.yml` | checks SSH login, Python and sudo |
 | `linux/ssh-pubkey-only.yml` | allows SSH public key authentication only |
 | `network/config-backup.yml` | backs up the OPNsense `config.xml` and a Brocade switch running-config |
+| `network/vlan-add.yml` | adds a VLAN: OPNsense interface, DHCP, DNS and default rules; tagged on the switch trunk ports only (`vlan_apply` false = plan only) |
+| `network/opnsense-automation.yml` | installs `vlan-provision` on OPNsense and limits the automation key to `semaphore-gate` (run as root) |
 | `nextcloud/files-scan.yml` | rescans user files (`occ files:scan`) |
 | `nextcloud/letsencrypt-cloudflare.yml` | issues or renews a Let's Encrypt certificate with the Cloudflare DNS challenge |
 | `proxmox/pbs-host-backup.yml` | backs up basic node configuration files to Proxmox Backup Server |
