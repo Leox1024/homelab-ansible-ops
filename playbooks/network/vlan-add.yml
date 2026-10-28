@@ -139,11 +139,12 @@
               {{ not switch_plan.exists
                  or not (switch_plan.trunk_ports | difference(switch_plan.existing.tagged) | length == 0) }}
 
-        # Read-only: shows the CLI is reachable and which prompt it gives.
+        # Read-only: logs in, tries enable (an empty answer if it asks for a password) and
+        # shows the prompt it ends on: configuring needs the privileged one ("#").
         - name: Check the switch CLI
           ansible.builtin.command:
             argv: "{{ switch_cli }}"
-            stdin: "{{ ['skip-page-display', 'show vlan ' ~ vlan_tag, 'exit'] | join('\n') }}"
+            stdin: "{{ ['skip-page-display', 'enable', '', 'show vlan ' ~ vlan_tag, 'exit', 'exit'] | join('\n') }}"
           environment:
             SSHPASS: "{{ switch_password }}"
           register: switch_probe
@@ -157,7 +158,7 @@
             - name: Run the switch commands
               ansible.builtin.command:
                 argv: "{{ switch_cli }}"
-                stdin: "{{ (['skip-page-display'] + switch_plan.commands + ['exit']) | join('\n') }}"
+                stdin: "{{ (['skip-page-display', 'enable'] + switch_plan.commands + ['exit']) | join('\n') }}"
               environment:
                 SSHPASS: "{{ switch_password }}"
               register: switch_session
@@ -205,7 +206,10 @@
           {% endif %}
           {% if opn.dhcp is defined %}
             DHCP       {{ opn.dhcp.start }} - {{ opn.dhcp.end }}
-            rules      {{ opn.rules | join('\n             ') }}
+            rules
+          {% for rule in opn.rules %}
+              {{ rule }}
+          {% endfor %}
             custom     sequence {{ opn.custom_rules_sequence }} (between the rules above and BLOCK-PRIVATE)
           {% endif %}
           {% if opn.checks is defined %}
@@ -215,7 +219,13 @@
           Switch {{ sw_host }}: {{ 'already done' if not sw.switch_todo | bool else ('applied' if vlan_mode == 'add' else 'to do') }}
             tagged on  {{ sw.switch_plan.trunk_ports | join(' ') }}
             untouched  {{ sw.switch_plan.untouched_ports | join(' ') }}
-            commands   {{ sw.switch_plan.commands | join('\n             ') }}
+            commands
+          {% for command in ['enable'] + sw.switch_plan.commands %}
+              {{ command }}
+          {% endfor %}
           {% if sw.switch_probe.stdout is defined %}
-            CLI check  {{ sw.switch_probe.stdout_lines | select | list | last | default('') }}
+            CLI check  {{ 'privileged mode reached' if sw.switch_probe.stdout is search('#') else 'NO privileged mode: configure would be refused' }}
+          {% for line in sw.switch_probe.stdout_lines | select | list %}
+              | {{ line }}
+          {% endfor %}
           {% endif %}
