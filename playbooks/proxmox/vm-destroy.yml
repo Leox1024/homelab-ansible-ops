@@ -42,7 +42,9 @@
         that:
           - vm.vmid is defined
           - vm.type == 'qemu'
-          - vm.pool | default('') == pve_pool
+          # Without Pool.Audit the API hides the pool: the token rights still stop
+          # any change to a VM outside it.
+          - vm.pool | default(pve_pool) == pve_pool
           - vm_confirm == vm.name
         fail_msg: >-
           VM {{ vm_id }} must exist in the pool {{ pve_pool }}, and vm_confirm must repeat its name
