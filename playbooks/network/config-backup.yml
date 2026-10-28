@@ -5,6 +5,8 @@
 # Inventory groups: opnsense, switches (switch_host_key), backup_target.
 # Variables: network_backup_dir, network_backup_owner, brocade_password (secret; the
 # switch is skipped while it is empty).
+# A device that cannot be read does not stop the others: what was read is stored, then
+# the run fails and names the device.
 
 - name: Network | read OPNsense config.xml
   hosts: opnsense
@@ -15,28 +17,35 @@
     ansible_ssh_use_tty: false
 
   tasks:
-    # Works with a key restricted to this command (authorized_keys command="...").
-    - name: Read config.xml
-      ansible.builtin.raw: cat /conf/config.xml
-      register: opnsense_config
-      changed_when: false
-      no_log: true
+    - name: Read the firewall configuration
+      block:
+        # Works with a key restricted to this command (authorized_keys command="...").
+        - name: Read config.xml
+          ansible.builtin.raw: cat /conf/config.xml
+          register: opnsense_config
+          changed_when: false
+          no_log: true
 
-    - name: Check the config is complete
-      ansible.builtin.assert:
-        that:
-          - opnsense_config.stdout is match('<\?xml')
-          - opnsense_config.stdout is search('</opnsense>\s*$')
-        fail_msg: config.xml looks empty or truncated
-        quiet: true
+        - name: Check the config is complete
+          ansible.builtin.assert:
+            that:
+              - opnsense_config.stdout is match('<\?xml')
+              - opnsense_config.stdout is search('</opnsense>\s*$')
+            fail_msg: config.xml looks empty or truncated
+            quiet: true
 
-    - name: Queue config.xml for storage
-      ansible.builtin.set_fact:
-        network_backup:
-          device: "{{ inventory_hostname }}"
-          file: config.xml
-          content: "{{ opnsense_config.stdout }}"
-      no_log: true
+        - name: Queue config.xml for storage
+          ansible.builtin.set_fact:
+            network_backup:
+              device: "{{ inventory_hostname }}"
+              file: config.xml
+              content: "{{ opnsense_config.stdout }}"
+          no_log: true
+
+      rescue:
+        - name: Remember the failure
+          ansible.builtin.set_fact:
+            network_backup_error: "{{ ansible_failed_result.msg | default('read failed') }}"
 
 - name: Network | read switch running-config
   hosts: switches
@@ -71,6 +80,7 @@
             mode: "0600"
 
         # FastIron 08.0.x: password only, legacy key exchange and legacy SCP protocol (-O).
+        # -T: the switch sends the file under another name than runConfig.
         - name: Copy runConfig over SCP
           ansible.builtin.command:
             argv:
@@ -78,6 +88,7 @@
               - -e
               - scp
               - -O
+              - -T
               - -o
               - KexAlgorithms=+diffie-hellman-group1-sha1
               - -o
@@ -102,6 +113,11 @@
               content: "{{ lookup('ansible.builtin.file', switch_tmp.path ~ '/running-config.txt') }}"
           no_log: true
 
+      rescue:
+        - name: Remember the failure
+          ansible.builtin.set_fact:
+            network_backup_error: "{{ ansible_failed_result.stderr | default(ansible_failed_result.msg, true) | default('read failed') }}"
+
       always:
         - name: Remove the temporary directory
           ansible.builtin.file:
@@ -121,6 +137,12 @@
     network_backups: >-
       {{ groups['all'] | map('extract', hostvars) | selectattr('network_backup', 'defined')
          | map(attribute='network_backup') | list }}
+    network_backup_errors: >-
+      {%- set out = {} -%}
+      {%- for h in groups['all'] if hostvars[h].network_backup_error is defined -%}
+      {%- set _ = out.update({h: hostvars[h].network_backup_error}) -%}
+      {%- endfor -%}
+      {{ out }}
 
   tasks:
     - name: Require the backup directory and its owner
@@ -184,11 +206,17 @@
         paths: "{{ network_backups | map(attribute='device') | map('regex_replace', '^(.*)$', network_backup_dir ~ '/\\1/history') | list }}"
         age: "{{ network_backup_history_days }}d"
       register: network_backup_expired
+      when: network_backups | length > 0
 
     - name: Delete dated copies past retention
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ network_backup_expired.files }}"
+      loop: "{{ network_backup_expired.files | default([]) }}"
       loop_control:
         label: "{{ item.path | basename }}"
+
+    - name: Fail for the devices that could not be read
+      ansible.builtin.fail:
+        msg: "Not backed up: {{ network_backup_errors }}"
+      when: network_backup_errors | length > 0
