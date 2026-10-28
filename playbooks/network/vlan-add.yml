@@ -82,11 +82,13 @@
     switch_password: "{{ brocade_password | default('') }}"
     vlan_tag: "{{ hostvars['localhost'].vlan_tag | int }}"
     vlan_apply: "{{ hostvars['localhost'].vlan_mode == 'add' }}"
-    switch_cli:
-      - sshpass
-      - -e
-      - ssh
-      - -tt
+    # Answer enable prompts with the login user and password (aaa authentication enable).
+    switch_enable_with_login: false
+    switch_cli: >-
+      {{ ['python3', playbook_dir ~ '/files/fastiron-cli.py']
+         + (['--enable-with-login'] if switch_enable_with_login | bool else [])
+         + [ansible_user ~ '@' ~ ansible_host] + switch_ssh_options + ['--'] }}
+    switch_ssh_options:
       - -o
       - KexAlgorithms=+diffie-hellman-group1-sha1
       - -o
@@ -99,9 +101,6 @@
       - UserKnownHostsFile={{ switch_tmp.path }}/known_hosts
       - -o
       - ConnectTimeout=15
-      - "{{ ansible_user }}@{{ ansible_host }}"
-    # Lines the FastIron CLI prints when a command is refused.
-    switch_error_re: '(?im)^.*(invalid input|incomplete command|error|not allowed|failed).*$'
 
   tasks:
     - name: Require the switch password
@@ -139,17 +138,16 @@
               {{ not switch_plan.exists
                  or not (switch_plan.trunk_ports | difference(switch_plan.existing.tagged) | length == 0) }}
 
-        # Read-only: logs in, tries enable (an empty answer if it asks for a password) and
-        # shows the prompt it ends on: configuring needs the privileged one ("#").
+        # Read-only: logs in and tries enable, the prompt it ends on tells whether the
+        # switch can be configured (privileged "#").
         - name: Check the switch CLI
           ansible.builtin.command:
-            argv: "{{ switch_cli }}"
-            stdin: "{{ ['skip-page-display', 'enable', '', 'show vlan ' ~ vlan_tag, 'exit', 'exit'] | join('\n') }}"
+            argv: "{{ switch_cli + ['enable'] }}"
           environment:
             SSHPASS: "{{ switch_password }}"
           register: switch_probe
           changed_when: false
-          failed_when: switch_probe.rc not in [0, 255] or switch_probe.stdout | length == 0
+          failed_when: switch_probe.rc not in [0, 2]
           when: not vlan_apply | bool
 
         - name: Apply the VLAN on the switch
@@ -157,13 +155,11 @@
           block:
             - name: Run the switch commands
               ansible.builtin.command:
-                argv: "{{ switch_cli }}"
-                stdin: "{{ (['skip-page-display', 'enable'] + switch_plan.commands + ['exit']) | join('\n') }}"
+                argv: "{{ switch_cli + switch_plan.commands }}"
               environment:
                 SSHPASS: "{{ switch_password }}"
               register: switch_session
               changed_when: true
-              failed_when: switch_session.stdout is search(switch_error_re) or switch_session.stdout | length == 0
 
             - name: Plan again on the new running-config
               ansible.builtin.include_tasks: tasks/fastiron-plan.yml
@@ -220,12 +216,19 @@
             tagged on  {{ sw.switch_plan.trunk_ports | join(' ') }}
             untouched  {{ sw.switch_plan.untouched_ports | join(' ') }}
             commands
-          {% for command in ['enable'] + sw.switch_plan.commands %}
+          {% for command in sw.switch_plan.commands %}
               {{ command }}
           {% endfor %}
           {% if sw.switch_probe.stdout is defined %}
-            CLI check  {{ 'privileged mode reached' if sw.switch_probe.stdout is search('#') else 'NO privileged mode: configure would be refused' }}
+          {% set privileged = sw.switch_probe.stdout is search('last prompt [^ ]+#') %}
+            CLI check  {{ 'privileged mode reached' if privileged else 'NO privileged mode: configure would be refused' }}
           {% for line in sw.switch_probe.stdout_lines | select | list %}
+              | {{ line }}
+          {% endfor %}
+          {% endif %}
+          {% if sw.switch_session.stdout is defined %}
+            session
+          {% for line in sw.switch_session.stdout_lines | select | list %}
               | {{ line }}
           {% endfor %}
           {% endif %}

@@ -98,6 +98,7 @@ def main():
             {p for v in others.values() for p in v["tagged"] + v["untagged"]} - trunk, key=port_key),
         "lags": {name: lag for name, lag in lags.items()},
         "commands": [
+            "enable",
             "configure terminal",
             f"vlan {tag} name V{tag} by port",
             "tagged " + " ".join(f"ethe {p}" for p in ports_sorted),
