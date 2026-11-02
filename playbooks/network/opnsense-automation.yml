@@ -5,9 +5,13 @@
 # Also installs the gateway monitor hook 50-killstates-linkdown: when a DHCP uplink loses
 # its link, the gateway has no address left and "Failover States" kills nothing; the hook
 # kills the states of the last router in the DHCP lease. It lives outside config.xml.
+# With opnsense_checkmk_key set, also installs cmk-agent-opnsense and limits that key to
+# it: Checkmk runs it over SSH ("Individual program call instead of agent access") for
+# the uplinks, failover, pf states, temperature, DNS, DHCP pools and core services.
 # Run it as root with an admin key, not with the automation key.
 # Variables: opnsense_automation_key (public key), opnsense_automation_from (address the
-# automation connects from).
+# automation connects from), opnsense_checkmk_key and opnsense_checkmk_from (the same for
+# Checkmk, optional).
 
 - name: OPNsense | automation commands
   hosts: opnsense
@@ -18,6 +22,8 @@
     opnsense_automation_user: root
     opnsense_automation_key: ""
     opnsense_automation_from: ""
+    opnsense_checkmk_key: ""
+    opnsense_checkmk_from: ""
 
   handlers:
     - name: Write the authorized keys of the user
@@ -62,3 +68,33 @@
       register: opnsense_key
       changed_when: opnsense_key.stdout is search('^changed', multiline=True)
       notify: Write the authorized keys of the user
+
+    - name: Checkmk agent
+      when: opnsense_checkmk_key | length > 0
+      block:
+        - name: Require a Checkmk public key
+          ansible.builtin.assert:
+            that: opnsense_checkmk_key is match('^(ssh-|ecdsa-)')
+            fail_msg: opnsense_checkmk_key must be a public key
+            quiet: true
+
+        - name: Install the Checkmk agent
+          ansible.builtin.copy:
+            src: files/cmk-agent-opnsense
+            dest: /usr/local/sbin/cmk-agent-opnsense
+            owner: root
+            group: wheel
+            mode: "0755"
+
+        - name: Limit the Checkmk key to cmk-agent-opnsense
+          ansible.builtin.script: files/opnsense-authorize-key.php
+          args:
+            executable: /usr/local/bin/php
+          environment:
+            AUTH_USER: "{{ opnsense_automation_user }}"
+            AUTH_ENTRY: >-
+              restrict,{{ ('from="' ~ opnsense_checkmk_from ~ '",') if opnsense_checkmk_from else '' }}command="/usr/local/sbin/cmk-agent-opnsense"
+              {{ opnsense_checkmk_key }}
+          register: opnsense_checkmk
+          changed_when: opnsense_checkmk.stdout is search('^changed', multiline=True)
+          notify: Write the authorized keys of the user

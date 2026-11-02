@@ -1,0 +1,384 @@
+#!/usr/local/bin/php
+<?php
+
+/*
+ * Checkmk agent of the firewall, run through the forced command of the Checkmk key
+ * (authorized_keys command="..."). SNMP already gives CPU, memory, disks and interfaces:
+ * this prints only local checks for what SNMP cannot see. The uplinks as OPNsense sees
+ * them, failover, pf states, CPU temperature, DNS, DHCP pools and core services.
+ * One PHP run and a few commands, about 0.2 s of CPU per check interval.
+ * Uplink levels are the gateway monitor defaults: at 10 % loss a gateway leaves its
+ * groups ("downloss"), at 20 % loss or 500 ms it is down.
+ */
+
+require_once 'config.inc';
+require_once 'util.inc';
+require_once 'interfaces.inc';
+
+const RTT_LEVELS = [200, 500];       /* ms */
+const LOSS_LEVELS = [10, 20];        /* % */
+const STATES_LEVELS = [70, 90];      /* % of the pf state limit */
+const TEMP_LEVELS = [75, 85];        /* °C */
+const DNS_LEVELS = [1, 3];           /* s */
+const DNSBL_MAX_AGE = 2 * 86400;     /* the lists update daily */
+const DHCP_LEVELS = [80, 95];        /* % of a pool */
+
+function level_state($value, $levels)
+{
+    return $value >= $levels[1] ? 2 : ($value >= $levels[0] ? 1 : 0);
+}
+
+function local_check($state, $name, $perf, $text)
+{
+    printf("%d \"%s\" %s %s\n", $state, $name, $perf === '' ? '-' : $perf, str_replace("\n", '\n', $text));
+}
+
+function cmd($command)
+{
+    exec($command . ' 2>/dev/null', $lines, $rc);
+    return $rc == 0 ? $lines : null;
+}
+
+function enabled_gateways()
+{
+    global $config;
+    $items = $config['OPNsense']['Gateways']['gateway_item'] ?? [];
+    $result = [];
+    foreach (isset($items['name']) ? [$items] : $items as $item) {
+        if (empty($item['disabled'])) {
+            $result[$item['name']] = $item;
+        }
+    }
+    return $result;
+}
+
+function gateway_groups()
+{
+    global $config;
+    $groups = [];
+    foreach ($config['gateways']['gateway_group'] ?? [] as $group) {
+        $tiers = [];
+        foreach (['item', 'item2', 'item3', 'item4', 'item5'] as $key) {
+            /* "item" is a list tag in config.inc, the others are plain strings */
+            $members = array_filter(explode(',', implode(',', (array)($group[$key] ?? []))), 'strlen');
+            if ($members) {
+                $tiers[] = array_values($members);
+            }
+        }
+        $groups[$group['name']] = ['tiers' => $tiers, 'trigger' => $group['trigger'] ?? 'down'];
+    }
+    return $groups;
+}
+
+function check_uplinks($status, $groups)
+{
+    foreach (enabled_gateways() as $name => $item) {
+        $gw = $status[$name] ?? null;
+        if ($gw === null) {
+            local_check(3, "WAN $name", '', 'no status from the gateway monitor');
+            continue;
+        }
+        $rtt = (float)$gw['delay'];
+        $stddev = (float)$gw['stddev'];
+        $loss = (float)$gw['loss'];
+        $state = ['none' => 0, 'delay' => 1, 'loss' => 1, 'force_down' => 1, 'down' => 2][$gw['status']] ?? 3;
+        $state = max($state, level_state($rtt, RTT_LEVELS), level_state($loss, LOSS_LEVELS));
+        $label = [
+            'none' => 'Online', 'delay' => 'Latency', 'loss' => 'Packet loss',
+            'down' => 'Offline', 'force_down' => 'Offline (forced)',
+        ][$gw['status']] ?? $gw['status'];
+
+        $primary = [];
+        foreach ($groups as $group => $info) {
+            if (in_array($name, $info['tiers'][0] ?? [])) {
+                $primary[] = $group;
+            }
+        }
+        $perf = sprintf(
+            'rta=%.4f;%.3f;%.3f|pl=%.1f;%d;%d',
+            $rtt / 1000, RTT_LEVELS[0] / 1000, RTT_LEVELS[1] / 1000,
+            $loss, LOSS_LEVELS[0], LOSS_LEVELS[1]
+        );
+        $text = sprintf(
+            '%s, RTT %.1f ms (stddev %.1f ms), loss %.1f %%, monitor %s, gateway %s',
+            $label, $rtt, $stddev, $loss, $gw['monitor'] ?? '-', $gw['gateway'] ?: 'none'
+        );
+        if ($primary) {
+            $text .= ', first choice of ' . implode(' ', $primary);
+        }
+        local_check($state, "WAN $name", $perf, $text);
+    }
+}
+
+function check_failover($status, $groups)
+{
+    $excluded = [
+        'down' => ['down', 'force_down'],
+        'downloss' => ['down', 'force_down', 'loss'],
+        'downlatency' => ['down', 'force_down', 'delay'],
+        'downlosslatency' => ['down', 'force_down', 'loss', 'delay'],
+    ];
+    $state = 0;
+    $parts = [];
+    foreach ($groups as $group => $info) {
+        $bad = $excluded[$info['trigger']] ?? $excluded['down'];
+        $active = [];
+        $tier = null;
+        foreach ($info['tiers'] as $index => $members) {
+            $usable = array_filter($members, function ($m) use ($status, $bad) {
+                return isset($status[$m]) && !in_array($status[$m]['status'], $bad);
+            });
+            if ($usable) {
+                $active = $usable;
+                $tier = $index;
+                break;
+            }
+        }
+        if ($tier === null) {
+            $state = 2;
+            $parts[] = "$group: no usable uplink";
+        } elseif ($tier > 0 || count($active) < count($info['tiers'][0])) {
+            $state = max($state, 1);
+            $parts[] = "$group: " . implode('+', $active) . ' (failover)';
+        } else {
+            $parts[] = "$group: " . implode('+', $active);
+        }
+    }
+
+    $default = 'none';
+    foreach (cmd('/sbin/route -n get default') ?? [] as $line) {
+        if (preg_match('/gateway: (\S+)/', $line, $m)) {
+            $default = $m[1];
+            foreach ($status as $name => $gw) {
+                if (($gw['gateway'] ?? '') === $m[1]) {
+                    $default = $name;
+                }
+            }
+        }
+    }
+    if ($default === 'none') {
+        $state = 2;
+    }
+    $parts[] = "default route: $default";
+    local_check($state, 'WAN failover', '', implode(', ', $parts));
+}
+
+function check_states()
+{
+    $current = $limit = null;
+    foreach (cmd('/sbin/pfctl -si') ?? [] as $line) {
+        if (preg_match('/current entries\s+(\d+)/', $line, $m)) {
+            $current = (int)$m[1];
+        }
+    }
+    foreach (cmd('/sbin/pfctl -sm') ?? [] as $line) {
+        if (preg_match('/^states\s+hard limit\s+(\d+)/', $line, $m)) {
+            $limit = (int)$m[1];
+        }
+    }
+    if ($current === null || !$limit) {
+        local_check(3, 'PF states', '', 'pfctl gave no state counters');
+        return;
+    }
+    $warn = intdiv($limit * STATES_LEVELS[0], 100);
+    $crit = intdiv($limit * STATES_LEVELS[1], 100);
+    $pct = 100 * $current / $limit;
+    local_check(
+        level_state($pct, STATES_LEVELS),
+        'PF states',
+        "states=$current;$warn;$crit;0;$limit",
+        sprintf('%d states, %.1f %% of the limit %d', $current, $pct, $limit)
+    );
+}
+
+function check_temperature()
+{
+    $ncpu = (int)get_single_sysctl('hw.ncpu');
+    $names = [];
+    for ($i = 0; $i < $ncpu; $i++) {
+        $names[] = "dev.cpu.$i.temperature";
+    }
+    $temps = array_map('floatval', array_filter(get_sysctl($names), 'strlen'));
+    if (!$temps) {
+        return; /* no coretemp/amdtemp driver */
+    }
+    $max = max($temps);
+    local_check(
+        level_state($max, TEMP_LEVELS),
+        'CPU temperature',
+        sprintf('temp=%.1f;%d;%d', $max, TEMP_LEVELS[0], TEMP_LEVELS[1]),
+        sprintf('%.1f °C (hottest of %d cores)', $max, count($temps))
+    );
+}
+
+function check_dns()
+{
+    global $config;
+    $unbound = $config['OPNsense']['unboundplus'] ?? [];
+    if (empty($unbound['general']['enabled'])) {
+        return;
+    }
+    $start = microtime(true);
+    $answer = cmd('/usr/bin/drill @127.0.0.1 opnsense.org A');
+    $elapsed = microtime(true) - $start;
+    $rcode = '';
+    foreach ($answer ?? [] as $line) {
+        if (preg_match('/rcode: (\w+)/', $line, $m)) {
+            $rcode = $m[1];
+        }
+    }
+    if ($rcode !== 'NOERROR') {
+        local_check(2, 'DNS resolver', '', 'Unbound did not resolve opnsense.org (' . ($rcode ?: 'no answer') . ')');
+        return;
+    }
+    $state = level_state($elapsed, DNS_LEVELS);
+    $text = sprintf('opnsense.org resolved in %d ms', $elapsed * 1000);
+
+    $lists = $unbound['dnsbl']['blocklist'] ?? [];
+    $active = array_filter(isset($lists['type']) ? [$lists] : $lists, function ($bl) {
+        return !empty($bl['enabled']) && !empty($bl['type']);
+    });
+    if ($active) {
+        $size = (int)@file_get_contents('/var/unbound/data/dnsbl.size');
+        $mtime = @filemtime('/var/unbound/data/dnsbl.json');
+        $age = $mtime ? time() - $mtime : null;
+        if ($size == 0 || $age === null || $age > DNSBL_MAX_AGE) {
+            $state = max($state, 1);
+        }
+        $text .= sprintf(
+            ', blocklist %d domains, updated %s',
+            $size, $age === null ? 'never' : sprintf('%.0f h ago', $age / 3600)
+        );
+    }
+    local_check($state, 'DNS resolver', sprintf('response_time=%.4f;%d;%d', $elapsed, DNS_LEVELS[0], DNS_LEVELS[1]), $text);
+}
+
+function check_dhcp()
+{
+    global $config;
+    if (empty($config['dnsmasq']['enable'])) {
+        return;
+    }
+    $leases = [];
+    foreach (@file('/var/db/dnsmasq.leases', FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+        $fields = explode(' ', $line);
+        if (isset($fields[2]) && ($ip = ip2long($fields[2])) !== false) {
+            $leases[] = $ip;
+        }
+    }
+    $ranges = $config['dnsmasq']['dhcp_ranges'] ?? [];
+    $pools = [];
+    foreach (isset($ranges['interface']) ? [$ranges] : $ranges as $range) {
+        $start = ip2long($range['start_addr'] ?? '');
+        $end = ip2long($range['end_addr'] ?? '');
+        if ($start === false || $end === false || $end < $start) {
+            continue; /* IPv6 or open ended */
+        }
+        $used = count(array_filter($leases, function ($ip) use ($start, $end) {
+            return $ip >= $start && $ip <= $end;
+        }));
+        $name = $config['interfaces'][$range['interface']]['descr'] ?? $range['interface'];
+        $pools[] = ['name' => $name, 'used' => $used, 'size' => $end - $start + 1];
+    }
+    if (!$pools) {
+        return;
+    }
+    usort($pools, function ($a, $b) {
+        return $b['used'] / $b['size'] <=> $a['used'] / $a['size'];
+    });
+    $top = $pools[0];
+    $pct = 100 * $top['used'] / $top['size'];
+    $lines = array_map(function ($p) {
+        return sprintf('%s %d/%d', $p['name'], $p['used'], $p['size']);
+    }, $pools);
+    local_check(
+        level_state($pct, DHCP_LEVELS),
+        'DHCP pools',
+        '',
+        sprintf("fullest %s %d/%d (%.0f %%), %d pools\n%s", $top['name'], $top['used'], $top['size'], $pct, count($pools), implode("\n", $lines))
+    );
+}
+
+function check_services()
+{
+    global $config;
+    $running = [];
+    foreach (cmd('/bin/ps -axww -o comm= -o args=') ?? [] as $line) {
+        $running[] = preg_split('/\s+/', trim($line), 2) + [1 => ''];
+    }
+    $count = function ($match) use ($running) {
+        return count(array_filter($running, $match));
+    };
+    $byname = function ($name) use ($count) {
+        return $count(function ($p) use ($name) {
+            return $p[0] === $name;
+        });
+    };
+
+    $want = ['configd' => 1, 'cron' => 1, 'ntpd' => 1, 'syslog-ng' => 1];
+    if (!empty($config['OPNsense']['unboundplus']['general']['enabled'])) {
+        $want['unbound'] = 1;
+    }
+    if (!empty($config['dnsmasq']['enable'])) {
+        $want['dnsmasq'] = 1;
+    }
+    if (!empty($config['OPNsense']['tailscale']['settings']['enabled'])) {
+        $want['tailscaled'] = 1;
+    }
+    $monitored = array_filter(enabled_gateways(), function ($gw) {
+        return empty($gw['monitor_disable']);
+    });
+    if ($monitored) {
+        $want['dpinger'] = count($monitored);
+    }
+
+    $missing = [];
+    foreach ($want as $name => $needed) {
+        $have = $name === 'configd'
+            ? $count(function ($p) {
+                return strpos($p[1], 'configd.py') !== false;
+            })
+            : $byname($name);
+        if ($have < $needed) {
+            $missing[] = $needed > 1 ? "$name ($have/$needed)" : $name;
+        }
+    }
+    local_check(
+        $missing ? 2 : 0,
+        'OPNsense services',
+        '',
+        $missing ? 'not running: ' . implode(', ', $missing) : 'running: ' . implode(', ', array_keys($want))
+    );
+}
+
+echo "<<<check_mk>>>\n";
+echo "Version: cmk-agent-opnsense\n";
+echo "AgentOS: freebsd\n";
+echo "<<<local:sep(0)>>>\n";
+
+try {
+    $status = return_gateways_status();
+    $groups = gateway_groups();
+} catch (Throwable $e) {
+    $status = $groups = [];
+    local_check(3, 'WAN failover', '', 'gateway status failed: ' . $e->getMessage());
+}
+foreach ([
+    'WAN' => function () use ($status, $groups) {
+        check_uplinks($status, $groups);
+    },
+    'WAN failover' => function () use ($status, $groups) {
+        check_failover($status, $groups);
+    },
+    'PF states' => 'check_states',
+    'CPU temperature' => 'check_temperature',
+    'DNS resolver' => 'check_dns',
+    'DHCP pools' => 'check_dhcp',
+    'OPNsense services' => 'check_services',
+] as $name => $check) {
+    try {
+        $check();
+    } catch (Throwable $e) {
+        local_check(3, $name, '', 'check failed: ' . $e->getMessage());
+    }
+}
