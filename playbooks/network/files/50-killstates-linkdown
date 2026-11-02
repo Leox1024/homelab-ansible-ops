@@ -1,0 +1,46 @@
+#!/usr/local/bin/php
+<?php
+
+/*
+ * Local hook (not part of OPNsense): "Failover States" for DHCP gateways that lose
+ * their link. 20-recover kills states by gateway address, but a dynamic gateway has
+ * no address once its link drops, so nothing gets killed and connections stay pinned
+ * to the dead uplink. Fall back to the last router recorded in the dhclient lease.
+ */
+
+require_once 'config.inc';
+require_once 'util.inc';
+require_once 'interfaces.inc';
+
+$affected_gateways = !empty($argv[1]) ? explode(',', $argv[1]) : [];
+
+$gw_interfaces = [];
+$items = $config['OPNsense']['Gateways']['gateway_item'] ?? [];
+foreach (isset($items['name']) ? [$items] : $items as $item) {
+    if (!empty($item['interface'])) {
+        $gw_interfaces[$item['name']] = $item['interface'];
+    }
+}
+
+foreach (return_gateways_status() as $status) {
+    if (!in_array($status['name'], $affected_gateways) || empty($status['monitor_killstates'])) {
+        continue;
+    }
+    /* gateways that still have an address are handled by 20-recover */
+    if (strpos($status['status'], 'down') === false || !empty($status['gateway'])) {
+        continue;
+    }
+    if (empty($gw_interfaces[$status['name']])) {
+        continue;
+    }
+
+    $device = get_real_interface($gw_interfaces[$status['name']]);
+    $leases = @file_get_contents("/var/db/dhclient.leases.{$device}");
+    if ($leases === false || !preg_match_all('/option routers ([0-9.]+);/', $leases, $matches)) {
+        continue;
+    }
+
+    $router = end($matches[1]);
+    $uuid = trim(configdp_run('filter kill gateway_states', [$router], true));
+    log_msg("ROUTING: killing states for addressless gateway {$status['name']} via last lease router {$router} [$uuid]", LOG_NOTICE);
+}

@@ -2,6 +2,9 @@
 # Installs what the automation may run on OPNsense, and limits its key to it: the key
 # gets the forced command semaphore-gate, which only allows reading config.xml
 # (config-backup.yml) and vlan-provision (vlan-add.yml).
+# Also installs the gateway monitor hook 50-killstates-linkdown: when a DHCP uplink loses
+# its link, the gateway has no address left and "Failover States" kills nothing; the hook
+# kills the states of the last router in the DHCP lease. It lives outside config.xml.
 # Run it as root with an admin key, not with the automation key.
 # Variables: opnsense_automation_key (public key), opnsense_automation_from (address the
 # automation connects from).
@@ -38,6 +41,14 @@
       loop:
         - vlan-provision
         - semaphore-gate
+
+    - name: Install the gateway monitor hook
+      ansible.builtin.copy:
+        src: files/50-killstates-linkdown
+        dest: /usr/local/etc/rc.syshook.d/monitor/50-killstates-linkdown
+        owner: root
+        group: wheel
+        mode: "0755"
 
     - name: Limit the automation key to semaphore-gate
       ansible.builtin.script: files/opnsense-authorize-key.php
