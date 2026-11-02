@@ -4,7 +4,8 @@
 # OPNsense (files/vlan-provision, reached through the forced command files/semaphore-gate
 # of the automation key): VLAN device on the trunk parent, interface V<tag> with the
 # gateway address, DHCP range, DNS, and the default rules DNS-OPNSENSE, TANG (optional),
-# BLOCK-PRIVATE, ALLOW-ANY, with room for custom rules before BLOCK-PRIVATE.
+# BLOCK-PRIVATE, ALLOW-ANY (through vlan_uplink if set), with room for custom rules before
+# BLOCK-PRIVATE.
 # Switch (FastIron): the VLAN is tagged on the trunk ports only, the ports that already
 # carry every other VLAN. Access ports and partial trunks are not touched.
 #
@@ -17,7 +18,8 @@
 # Inputs: vlan_tag, vlan_apply, vlan_tang (default true).
 # Site settings: vlan_gateway_template, vlan_dhcp_start_template, vlan_dhcp_end_template
 # ("{tag}" is replaced: e.g. 10.0.{tag}.1/24, 10.0.{tag}.201, 10.0.{tag}.249),
-# brocade_password (secret), switch_host_key.
+# vlan_uplink (gateway or gateway group for ALLOW-ANY, e.g. a failover group; empty: the
+# default route), brocade_password (secret), switch_host_key.
 
 - name: Network | check the request
   hosts: localhost
@@ -29,6 +31,7 @@
     vlan_gateway_template: ""
     vlan_dhcp_start_template: ""
     vlan_dhcp_end_template: ""
+    vlan_uplink: ""
 
   tasks:
     - name: Check the request
@@ -39,7 +42,8 @@
           - "'{tag}' in vlan_gateway_template"
           - vlan_dhcp_start_template | length > 0
           - vlan_dhcp_end_template | length > 0
-        fail_msg: vlan_tag must be 2-4094; set vlan_gateway_template and the DHCP templates
+          - vlan_uplink is match('^[A-Za-z0-9_-]{0,32}$')
+        fail_msg: vlan_tag must be 2-4094; set vlan_gateway_template and the DHCP templates; vlan_uplink is a gateway or group name
         quiet: true
 
     - name: Work out the addresses
@@ -49,6 +53,7 @@
         vlan_dhcp_start: "{{ vlan_dhcp_start_template | replace('{tag}', vlan_tag | int | string) }}"
         vlan_dhcp_end: "{{ vlan_dhcp_end_template | replace('{tag}', vlan_tag | int | string) }}"
         vlan_tang_arg: "{{ 'tang' if vlan_tang | bool else 'notang' }}"
+        vlan_uplink_arg: "{{ vlan_uplink }}"
 
 - name: OPNsense | add the VLAN
   hosts: opnsense
@@ -64,7 +69,7 @@
     - name: Run vlan-provision ({{ req.vlan_mode }})
       ansible.builtin.raw: >-
         vlan-provision {{ req.vlan_mode }} {{ req.vlan_tag | int }} {{ req.vlan_gateway }}
-        {{ req.vlan_dhcp_start }} {{ req.vlan_dhcp_end }} {{ req.vlan_tang_arg }}
+        {{ req.vlan_dhcp_start }} {{ req.vlan_dhcp_end }} {{ req.vlan_tang_arg }}{{ (' ' ~ req.vlan_uplink_arg) if req.vlan_uplink_arg else '' }}
       register: opn_run
       changed_when: 'opn_run.stdout is search(''"result": "created"'')'
       failed_when: 'opn_run.stdout is not search(''"result": "(plan|created|exists)"'')'
@@ -208,6 +213,7 @@
           {% endif %}
           {% if opn.dhcp is defined %}
             DHCP       {{ opn.dhcp.start }} - {{ opn.dhcp.end }}
+            uplink     {{ opn.uplink }}
             rules
           {% for rule in opn.rules %}
               {{ rule }}
